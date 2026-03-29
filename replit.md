@@ -48,6 +48,29 @@ Every package extends `tsconfig.base.json` which sets `composite: true`. The roo
 - `pnpm run build` — runs `typecheck` first, then recursively runs `build` in all packages that define it
 - `pnpm run typecheck` — runs `tsc --build --emitDeclarationOnly` using project references
 
+## WhatsApp Automation
+
+The API server includes a WhatsApp automation feature powered by `whatsapp-web.js` and Puppeteer.
+
+### Dashboard
+- Available at `/api/dashboard`
+- Shows live QR code for WhatsApp login (also printed to console via `qrcode-terminal`)
+- Shows connection status (authenticated / client ready)
+- Manual video upload to WhatsApp Status once authenticated
+
+### Auto-Status Feature
+- Monitors all messages sent **from you** (`fromMe`) or from **+13215586703**
+- If a video message has the caption exactly **"Status..."**, it is automatically posted to your WhatsApp Status
+- If you **reply** to an existing video with the text **"Status..."**, the quoted video is downloaded and posted to your Status
+
+### Key files
+- `artifacts/api-server/src/whatsapp/client.ts` — WhatsApp client init, event handling, auto-status logic
+- `artifacts/api-server/src/routes/whatsapp.ts` — API routes (`/api/whatsapp/status`, `/api/whatsapp/qr`, `/api/whatsapp/upload-status`, `/api/whatsapp/events`)
+- `artifacts/api-server/src/public/index.html` — Dashboard UI with real-time SSE updates
+
+### Session persistence
+WhatsApp sessions are persisted to `.wwebjs_auth/` in the working directory — you only need to scan the QR code once.
+
 ## Packages
 
 ### `artifacts/api-server` (`@workspace/api-server`)

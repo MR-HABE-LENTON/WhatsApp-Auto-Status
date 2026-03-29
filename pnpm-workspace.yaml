@@ -71,6 +71,7 @@ onlyBuiltDependencies:
   - '@swc/core'
   - esbuild
   - msw
+  - puppeteer
   - unrs-resolver
 
 overrides:
