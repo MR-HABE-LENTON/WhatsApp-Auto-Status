@@ -14,3 +14,31 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * @summary Get WhatsApp connection status
+ */
+export const GetWhatsAppStatusResponse = zod.object({
+  authenticated: zod.boolean(),
+  ready: zod.boolean(),
+  hasQr: zod.boolean(),
+});
+
+/**
+ * @summary Get current QR code string
+ */
+export const GetWhatsAppQrResponse = zod.object({
+  qr: zod.string(),
+});
+
+/**
+ * @summary Manually upload a video to WhatsApp Status
+ */
+export const UploadVideoToStatusBody = zod.object({
+  video: zod.instanceof(File),
+});
+
+export const UploadVideoToStatusResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string(),
+});

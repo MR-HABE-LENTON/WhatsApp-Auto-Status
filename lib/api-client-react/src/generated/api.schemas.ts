@@ -8,3 +8,26 @@
 export interface HealthStatus {
   status: string;
 }
+
+export interface WhatsAppStatus {
+  authenticated: boolean;
+  ready: boolean;
+  hasQr: boolean;
+}
+
+export interface WhatsAppQr {
+  qr: string;
+}
+
+export interface UploadResult {
+  success: boolean;
+  message: string;
+}
+
+export interface ErrorResponse {
+  error: string;
+}
+
+export type UploadVideoToStatusBody = {
+  video: Blob;
+};

@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: whatsapp
+    description: WhatsApp automation
 paths:
   /healthz:
     get:
@@ -24,6 +26,75 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /whatsapp/status:
+    get:
+      operationId: getWhatsAppStatus
+      tags: [whatsapp]
+      summary: Get WhatsApp connection status
+      responses:
+        "200":
+          description: Status info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WhatsAppStatus"
+
+  /whatsapp/qr:
+    get:
+      operationId: getWhatsAppQr
+      tags: [whatsapp]
+      summary: Get current QR code string
+      responses:
+        "200":
+          description: QR code data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WhatsAppQr"
+        "404":
+          description: No QR available
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /whatsapp/upload-status:
+    post:
+      operationId: uploadVideoToStatus
+      tags: [whatsapp]
+      summary: Manually upload a video to WhatsApp Status
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [video]
+              properties:
+                video:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: WhatsApp not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +105,43 @@ components:
       required:
         - status
 
+    WhatsAppStatus:
+      type: object
+      properties:
+        authenticated:
+          type: boolean
+        ready:
+          type: boolean
+        hasQr:
+          type: boolean
+      required:
+        - authenticated
+        - ready
+        - hasQr
+
+    WhatsAppQr:
+      type: object
+      properties:
+        qr:
+          type: string
+      required:
+        - qr
+
+    UploadResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
+        - message
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error

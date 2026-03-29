@@ -1,0 +1,10 @@
+packages:
+  "framer-motion": "For smooth transitions between QR code and upload states"
+  "qrcode.react": "To render the WhatsApp login QR code nicely as an SVG"
+  "react-dropzone": "For a polished drag-and-drop video upload experience"
+
+images: []
+
+notes:
+  - "The backend SSE endpoint /api/whatsapp/events provides real-time connection state."
+  - "The generated Orval hooks expect { data: { video: File } } for the upload mutation."

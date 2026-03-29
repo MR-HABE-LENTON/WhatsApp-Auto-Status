@@ -5,18 +5,28 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  ErrorResponse,
+  HealthStatus,
+  UploadResult,
+  UploadVideoToStatusBody,
+  WhatsAppQr,
+  WhatsAppStatus,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -99,3 +109,241 @@ export function useHealthCheck<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary Get WhatsApp connection status
+ */
+export const getGetWhatsAppStatusUrl = () => {
+  return `/api/whatsapp/status`;
+};
+
+export const getWhatsAppStatus = async (
+  options?: RequestInit,
+): Promise<WhatsAppStatus> => {
+  return customFetch<WhatsAppStatus>(getGetWhatsAppStatusUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetWhatsAppStatusQueryKey = () => {
+  return [`/api/whatsapp/status`] as const;
+};
+
+export const getGetWhatsAppStatusQueryOptions = <
+  TData = Awaited<ReturnType<typeof getWhatsAppStatus>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getWhatsAppStatus>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetWhatsAppStatusQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getWhatsAppStatus>>
+  > = ({ signal }) => getWhatsAppStatus({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getWhatsAppStatus>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetWhatsAppStatusQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getWhatsAppStatus>>
+>;
+export type GetWhatsAppStatusQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get WhatsApp connection status
+ */
+
+export function useGetWhatsAppStatus<
+  TData = Awaited<ReturnType<typeof getWhatsAppStatus>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getWhatsAppStatus>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetWhatsAppStatusQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get current QR code string
+ */
+export const getGetWhatsAppQrUrl = () => {
+  return `/api/whatsapp/qr`;
+};
+
+export const getWhatsAppQr = async (
+  options?: RequestInit,
+): Promise<WhatsAppQr> => {
+  return customFetch<WhatsAppQr>(getGetWhatsAppQrUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetWhatsAppQrQueryKey = () => {
+  return [`/api/whatsapp/qr`] as const;
+};
+
+export const getGetWhatsAppQrQueryOptions = <
+  TData = Awaited<ReturnType<typeof getWhatsAppQr>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getWhatsAppQr>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetWhatsAppQrQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getWhatsAppQr>>> = ({
+    signal,
+  }) => getWhatsAppQr({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getWhatsAppQr>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetWhatsAppQrQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getWhatsAppQr>>
+>;
+export type GetWhatsAppQrQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get current QR code string
+ */
+
+export function useGetWhatsAppQr<
+  TData = Awaited<ReturnType<typeof getWhatsAppQr>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getWhatsAppQr>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetWhatsAppQrQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Manually upload a video to WhatsApp Status
+ */
+export const getUploadVideoToStatusUrl = () => {
+  return `/api/whatsapp/upload-status`;
+};
+
+export const uploadVideoToStatus = async (
+  uploadVideoToStatusBody: UploadVideoToStatusBody,
+  options?: RequestInit,
+): Promise<UploadResult> => {
+  const formData = new FormData();
+  formData.append(`video`, uploadVideoToStatusBody.video);
+
+  return customFetch<UploadResult>(getUploadVideoToStatusUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getUploadVideoToStatusMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadVideoToStatus>>,
+    TError,
+    { data: BodyType<UploadVideoToStatusBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadVideoToStatus>>,
+  TError,
+  { data: BodyType<UploadVideoToStatusBody> },
+  TContext
+> => {
+  const mutationKey = ["uploadVideoToStatus"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadVideoToStatus>>,
+    { data: BodyType<UploadVideoToStatusBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return uploadVideoToStatus(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UploadVideoToStatusMutationResult = NonNullable<
+  Awaited<ReturnType<typeof uploadVideoToStatus>>
+>;
+export type UploadVideoToStatusMutationBody = BodyType<UploadVideoToStatusBody>;
+export type UploadVideoToStatusMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Manually upload a video to WhatsApp Status
+ */
+export const useUploadVideoToStatus = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadVideoToStatus>>,
+    TError,
+    { data: BodyType<UploadVideoToStatusBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof uploadVideoToStatus>>,
+  TError,
+  { data: BodyType<UploadVideoToStatusBody> },
+  TContext
+> => {
+  return useMutation(getUploadVideoToStatusMutationOptions(options));
+};
