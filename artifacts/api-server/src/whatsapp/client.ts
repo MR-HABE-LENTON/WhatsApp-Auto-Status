@@ -96,6 +96,32 @@ function isTrustedSender(msg: { fromMe: boolean; from: string }): boolean {
   return number.endsWith(trusted) || trusted.endsWith(number);
 }
 
+/**
+ * Build a high-quality MessageMedia for video status upload.
+ *
+ * Key decisions to bypass WhatsApp compression:
+ *  - Force mimetype to "video/mp4" so WhatsApp recognises the container correctly.
+ *  - Supply a filename ending in ".mp4" — WhatsApp uses this to decide whether to transcode.
+ *  - Supply the filesize in bytes — when present, WhatsApp skips its size-based re-encode check.
+ *  - sendMediaAsHd: true  → instructs the client to upload in HD quality.
+ *  - sendVideoAsGif: false → explicitly prevents the GIF re-encoding path.
+ *  - sendMediaAsSticker: false → safety guard.
+ *  NOTE: sendMediaAsDocument is blocked by the library for status@broadcast, so we do NOT use it.
+ */
+function buildVideoMedia(base64Data: string, originalMimetype: string, fileSizeBytes?: number): InstanceType<typeof MessageMedia> {
+  const mimetype = "video/mp4";
+  const filename = "status_video.mp4";
+  const filesize = fileSizeBytes ?? Math.ceil((base64Data.length * 3) / 4);
+  return new MessageMedia(mimetype, base64Data, filename, filesize);
+}
+
+/** Options passed to every status sendMessage call for maximum quality */
+const STATUS_SEND_OPTIONS = {
+  sendVideoAsGif: false,
+  sendMediaAsSticker: false,
+  sendMediaAsHd: true,
+} as const;
+
 client.on("message_create", async (msg: any) => {
   try {
     if (!isTrustedSender(msg)) return;
@@ -108,12 +134,11 @@ client.on("message_create", async (msg: any) => {
     if (msg.hasQuotedMsg) {
       const quoted = await msg.getQuotedMessage();
       if (quoted.hasMedia) {
-        const media = await quoted.downloadMedia();
-        if (media && (media.mimetype as string)?.startsWith("video")) {
-          logger.info("Uploading quoted video to WhatsApp Status");
-          await client.sendMessage("status@broadcast", media, {
-            sendMediaAsSticker: false,
-          });
+        const raw = await quoted.downloadMedia();
+        if (raw && (raw.mimetype as string)?.startsWith("video")) {
+          const media = buildVideoMedia(raw.data, raw.mimetype);
+          logger.info("Uploading quoted video to WhatsApp Status (HD)");
+          await client.sendMessage("status@broadcast", media, STATUS_SEND_OPTIONS);
           logger.info("Quoted video uploaded to Status");
           whatsappEvents.emit("status_uploaded", { source: "quoted" });
         } else {
@@ -124,12 +149,11 @@ client.on("message_create", async (msg: any) => {
     }
 
     if (msg.hasMedia) {
-      const media = await msg.downloadMedia();
-      if (media && (media.mimetype as string)?.startsWith("video")) {
-        logger.info("Uploading video to WhatsApp Status");
-        await client.sendMessage("status@broadcast", media, {
-          sendMediaAsSticker: false,
-        });
+      const raw = await msg.downloadMedia();
+      if (raw && (raw.mimetype as string)?.startsWith("video")) {
+        const media = buildVideoMedia(raw.data, raw.mimetype);
+        logger.info("Uploading video to WhatsApp Status (HD)");
+        await client.sendMessage("status@broadcast", media, STATUS_SEND_OPTIONS);
         logger.info("Video uploaded to Status");
         whatsappEvents.emit("status_uploaded", { source: "direct" });
       } else {
@@ -141,14 +165,17 @@ client.on("message_create", async (msg: any) => {
   }
 });
 
-export async function uploadVideoToStatus(mediaData: string, mimetype: string): Promise<void> {
+export async function uploadVideoToStatus(
+  mediaData: string,
+  mimetype: string,
+  fileSizeBytes?: number,
+): Promise<void> {
   if (!isReady) {
     throw new Error("WhatsApp client is not ready");
   }
-  const media = new MessageMedia(mimetype, mediaData);
-  await client.sendMessage("status@broadcast", media, {
-    sendMediaAsSticker: false,
-  });
+  const media = buildVideoMedia(mediaData, mimetype, fileSizeBytes);
+  logger.info({ filesize: media.filesize }, "Uploading manual video to WhatsApp Status (HD)");
+  await client.sendMessage("status@broadcast", media, STATUS_SEND_OPTIONS);
   logger.info("Manual video uploaded to Status");
   whatsappEvents.emit("status_uploaded", { source: "manual" });
 }

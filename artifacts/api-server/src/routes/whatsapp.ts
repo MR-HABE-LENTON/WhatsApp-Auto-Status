@@ -55,7 +55,7 @@ router.post(
       }
 
       const base64 = req.file.buffer.toString("base64");
-      await uploadVideoToStatus(base64, req.file.mimetype);
+      await uploadVideoToStatus(base64, req.file.mimetype, req.file.size);
 
       res.json({ success: true, message: "Video uploaded to WhatsApp Status" });
     } catch (err: unknown) {
