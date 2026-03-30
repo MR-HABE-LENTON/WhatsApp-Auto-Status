@@ -103,6 +103,7 @@ async function buildAll() {
       "whatsapp-web.js",
       "qrcode-terminal",
       "multer",
+      "fluent-ffmpeg",
     ],
     sourcemap: "linked",
     plugins: [
