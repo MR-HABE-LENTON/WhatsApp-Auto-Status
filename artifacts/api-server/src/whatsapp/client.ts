@@ -3,6 +3,8 @@ import { createRequire } from "module";
 import path from "path";
 import fs from "fs";
 import os from "os";
+import https from "https";
+import http from "http";
 import { execSync } from "child_process";
 import { logger } from "../lib/logger.js";
 import { EventEmitter } from "events";
@@ -42,20 +44,13 @@ export function getIsReady()         { return isReady; }
 const TRUSTED_NUMBER = "+13215586703";
 const STATUS_TRIGGER = "Status...";
 
+// Regex: "Status..." optionally followed by a space, then a URL
+const STATUS_TIKTOK_RE = /^Status\.\.\.\s*(https?:\/\/\S+)/i;
+
 const dataDir = path.resolve(process.cwd(), ".wwebjs_auth");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 // ─── Identity: compatible browser UA with Android platform injection ──────────
-//
-// WhatsApp Web requires a desktop browser User-Agent to function correctly —
-// passing a native WhatsApp Android UA causes the Web interface to reject the
-// connection (auth timeout).  We therefore keep a standard Chrome desktop UA
-// for HTTP/WebSocket transport, and inject the Android platform identity at the
-// JavaScript level via window.Store.Conn.platform after the client is ready.
-//
-// This is the correct split: transport layer speaks browser, session layer
-// identifies as Android — exactly the same split that WhatsApp GB uses when
-// connecting through its internal WebView.
 const ANDROID_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
   "AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -65,13 +60,7 @@ const ANDROID_USER_AGENT =
 
 export const client = new Client({
   authStrategy: new LocalAuth({ dataPath: dataDir }),
-
-  // ── Android identity ────────────────────────────────────────────────────────
-  // Overrides the default macOS/Chrome UA with our Android GB identity.
-  // whatsapp-web.js passes this to both the --user-agent Chrome arg AND
-  // page.setUserAgent(), so every request carries the Android fingerprint.
   userAgent: ANDROID_USER_AGENT,
-
   puppeteer: {
     headless: true,
     args: [
@@ -83,27 +72,17 @@ export const client = new Client({
       "--no-zygote",
       "--single-process",
       "--disable-gpu",
-      // Memory: allow Chrome to hold large media buffers in V8 (4 GB heap)
       "--js-flags=--max-old-space-size=4096",
-      // Prevent Chrome from evicting in-flight media under memory pressure
       "--memory-pressure-off",
-      // Disable Chrome's disk/media cache overhead
       "--disk-cache-size=0",
       "--media-cache-size=0",
     ],
-    // 5-minute CDP timeout for large media uploads (>100 MB)
     protocolTimeout: 300_000,
     timeout: 0,
   },
 });
 
 // ─── Platform override (inject after ready) ───────────────────────────────────
-//
-// WhatsApp Web normally identifies as platform "web".  We override
-// window.Store.Conn.platform to "android" after the client is ready so that
-// the session appears to originate from an Android device.  This is the same
-// platform value WhatsApp GB sends and is the key reason GB clients bypass
-// server-side size restrictions that apply to regular web clients.
 
 async function injectAndroidPlatform(): Promise<void> {
   try {
@@ -113,11 +92,10 @@ async function injectAndroidPlatform(): Promise<void> {
           (window as any).Store.Conn.platform = "android";
           (window as any).Store.Conn.ref      = "android";
         }
-        // Also patch the AuthStore so any re-registration keeps the platform
         if ((window as any).AuthStore?.RegistrationUtils) {
           (window as any).AuthStore.RegistrationUtils.DEVICE_PLATFORM = "android";
         }
-      } catch (_) { /* ignore — Store may not be fully initialised */ }
+      } catch (_) { /* ignore */ }
     });
     logger.info("Android platform identity injected");
   } catch (err) {
@@ -163,6 +141,19 @@ client.on("disconnected", (reason: string) => {
   whatsappEvents.emit("disconnected", reason);
 });
 
+// ─── Pairing Code ─────────────────────────────────────────────────────────────
+
+export async function requestPairingCode(phoneNumber: string): Promise<string> {
+  // Strip everything except digits
+  const digits = phoneNumber.replace(/\D/g, "");
+  if (!digits) throw new Error("Invalid phone number");
+  logger.info({ digits }, "Requesting pairing code");
+  const code = await (client as any).requestPairingCode(digits);
+  logger.info({ code }, "Pairing code received");
+  whatsappEvents.emit("pairing_code", { code });
+  return code as string;
+}
+
 // ─── Codec Detection (ffprobe) ────────────────────────────────────────────────
 
 interface CodecInfo {
@@ -194,10 +185,6 @@ function probeCodecs(filePath: string): Promise<CodecInfo> {
 }
 
 // ─── Smart FFmpeg Pipeline ────────────────────────────────────────────────────
-//
-// Pass-through (H.264 + AAC): stream-copy both tracks — zero quality loss, fastest.
-// Partial copy (H.264 only):  copy video, transcode audio to AAC only.
-// Full re-encode:             libx264 CRF 18 (visual lossless) → 1080×1920 portrait.
 
 async function processVideoSmartHD(inputPath: string): Promise<string> {
   const { isH264, isAac, videoCodec } = await probeCodecs(inputPath);
@@ -241,20 +228,154 @@ async function processVideoSmartHD(inputPath: string): Promise<string> {
   });
 }
 
+// ─── Orientation Conversion ───────────────────────────────────────────────────
+//
+// vertical  (9:16) → pad to 1080×1920 with black bars on top/bottom
+// horizontal (16:9) → pad to 1920×1080 with black bars on left/right
+
+export type Orientation = "vertical" | "horizontal";
+
+export async function convertOrientation(
+  inputPath: string,
+  orientation: Orientation,
+): Promise<string> {
+  const id         = `wa_orient_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const outputPath = path.join(os.tmpdir(), `${id}_oriented.mp4`);
+
+  // scale to fit within target box, then pad to fill it
+  const vf =
+    orientation === "vertical"
+      ? "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
+      : "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black";
+
+  logger.info({ orientation, vf, outputPath }, "Converting orientation");
+
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .outputOptions([
+        `-vf ${vf}`,
+        "-c:v libx264", "-crf 18", "-preset fast",
+        "-pix_fmt yuv420p",
+        "-c:a aac", "-b:a 192k",
+        "-movflags +faststart",
+      ])
+      .on("start", (cmd) => logger.info({ cmd }, "orientation ffmpeg started"))
+      .on("end", () => { logger.info({ orientation }, "orientation ffmpeg done"); resolve(outputPath); })
+      .on("error", (err) => {
+        logger.error({ err: err.message }, "orientation ffmpeg error");
+        try { fs.unlinkSync(outputPath); } catch {}
+        reject(err);
+      })
+      .save(outputPath);
+  });
+}
+
+// ─── TikTok HD Download ───────────────────────────────────────────────────────
+//
+// Uses the tikwm.com public API to resolve the HD no-watermark download URL,
+// then streams the video to a temp file on disk.
+
+export async function downloadTikTokHD(tiktokUrl: string): Promise<string> {
+  logger.info({ tiktokUrl }, "Resolving TikTok HD URL via tikwm.com");
+
+  const apiUrl =
+    `https://www.tikwm.com/api/?url=${encodeURIComponent(tiktokUrl)}&hd=1`;
+
+  const apiResponse = await fetchJson(apiUrl);
+
+  if (!apiResponse?.data) {
+    throw new Error("tikwm.com API did not return data — possibly unsupported URL");
+  }
+
+  // Prefer HD no-watermark; fall back to standard play URL
+  const videoUrl: string =
+    apiResponse.data.hdplay ||
+    apiResponse.data.play ||
+    "";
+
+  if (!videoUrl) {
+    throw new Error("No download URL found in tikwm.com response");
+  }
+
+  logger.info({ videoUrl: videoUrl.slice(0, 80) }, "Downloading TikTok video");
+
+  const id      = `tiktok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const outPath = path.join(os.tmpdir(), `${id}.mp4`);
+
+  await streamUrlToFile(videoUrl, outPath);
+
+  const bytes = fs.statSync(outPath).size;
+  logger.info({ outPath, bytes }, "TikTok video downloaded");
+
+  return outPath;
+}
+
+// ─── HTTP helpers ─────────────────────────────────────────────────────────────
+
+function fetchJson(url: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https") ? https : http;
+    const req = lib.get(
+      url,
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      },
+      (res) => {
+        // follow redirects
+        if ((res.statusCode ?? 0) >= 300 && res.headers.location) {
+          fetchJson(res.headers.location).then(resolve).catch(reject);
+          return;
+        }
+        let raw = "";
+        res.on("data", (chunk) => (raw += chunk));
+        res.on("end", () => {
+          try { resolve(JSON.parse(raw)); }
+          catch (e) { reject(new Error(`JSON parse error: ${(e as Error).message}\nBody: ${raw.slice(0, 200)}`)); }
+        });
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(30_000, () => { req.destroy(); reject(new Error("fetchJson timeout")); });
+  });
+}
+
+function streamUrlToFile(url: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https") ? https : http;
+    const out = fs.createWriteStream(dest);
+
+    const doGet = (targetUrl: string) => {
+      const req = lib.get(
+        targetUrl,
+        {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.tiktok.com/",
+          },
+        },
+        (res) => {
+          if ((res.statusCode ?? 0) >= 300 && res.headers.location) {
+            doGet(res.headers.location);
+            return;
+          }
+          res.pipe(out);
+          out.on("finish", () => out.close(() => resolve()));
+          out.on("error", reject);
+        },
+      );
+      req.on("error", reject);
+      req.setTimeout(120_000, () => { req.destroy(); reject(new Error("streamUrlToFile timeout")); });
+    };
+
+    doGet(url);
+  });
+}
+
 // ─── Force Document Upload via direct pupPage call ────────────────────────────
-//
-// The whatsapp-web.js Node.js layer explicitly rejects sendMediaAsDocument for
-// status@broadcast before the message even reaches the browser.  We bypass this
-// by calling window.WWebJS.sendMessage() directly inside pupPage.evaluate(),
-// which skips the Node.js guard entirely and goes straight to the WhatsApp Web
-// internal API with forceDocument: true.
-//
-// Why documents bypass the 64 MB limit:
-//  - WhatsApp's media server treats video/document uploads differently from
-//    status media uploads: documents go through the document CDN path which has
-//    a higher (or no enforced) size ceiling.
-//  - WhatsApp GB uses exactly this technique — it sends large status videos as
-//    document-type media objects that are then displayed inline as video.
 
 async function sendAsDocumentThroughPage(
   base64: string,
@@ -265,12 +386,9 @@ async function sendAsDocumentThroughPage(
 
   await pupPage.evaluate(
     async (b64: string, size: number, cap: string) => {
-      // Resolve the status broadcast chat directly in the browser context
       const chat = await (window as any).WWebJS.getChat("status@broadcast", { getAsModel: false });
       if (!chat) throw new Error("status@broadcast chat not found");
 
-      // Build the media info object exactly as whatsapp-web.js would,
-      // but with sendMediaAsDocument: true (forceDocument path)
       await (window as any).WWebJS.sendMessage(chat, cap, {
         media: {
           mimetype: "video/mp4",
@@ -278,8 +396,8 @@ async function sendAsDocumentThroughPage(
           filename: "status_video.mp4",
           filesize: size,
         },
-        caption:             cap,
-        sendMediaAsDocument: true,   // ← force document upload (bypasses 64 MB limit)
+        caption,
+        sendMediaAsDocument: true,
         sendMediaAsHd:       true,
         sendVideoAsGif:      false,
       });
@@ -344,12 +462,6 @@ async function downloadMediaWithTimeout(msg: any, timeoutMs = 300_000): Promise<
 }
 
 // ─── Core upload pipeline ─────────────────────────────────────────────────────
-//
-// For files ≤ ~64 MB: use the standard sendMessage path (fast, reliable).
-// For files  > 64 MB: use Force Document Upload via direct pupPage.evaluate()
-//   to bypass both the Node.js library guard and the server's size check.
-//
-// The threshold is conservative (60 MB) to give headroom for base64 overhead.
 
 const DOCUMENT_FORCE_THRESHOLD_BYTES = 60 * 1024 * 1024; // 60 MB
 
@@ -390,13 +502,84 @@ async function sendVideoToStatus(raw: any, source: string): Promise<void> {
   }
 }
 
-// ─── Auto-status listener ─────────────────────────────────────────────────────
+// ─── sendFilePathToStatus (shared by manual upload & link download) ───────────
+
+export async function sendFilePathToStatus(
+  inputPath: string,
+  orientation?: Orientation | null,
+): Promise<void> {
+  let orientedPath: string | null = null;
+  let processedPath: string | null = null;
+
+  try {
+    // Optionally re-orient first
+    const workingPath =
+      orientation ? await convertOrientation(inputPath, orientation) : inputPath;
+    if (orientation) orientedPath = workingPath;
+
+    processedPath = await processVideoSmartHD(workingPath);
+    const media   = buildMediaFromFile(processedPath);
+    const outSize = media.filesize as number;
+    const mb      = (outSize / 1024 / 1024).toFixed(2);
+
+    if (outSize > DOCUMENT_FORCE_THRESHOLD_BYTES) {
+      logger.info({ mb }, "Large file — using Force Document Upload");
+      await sendAsDocumentThroughPage(media.data, outSize, "");
+    } else {
+      logger.info({ mb }, "Sending via standard status path");
+      await client.sendMessage("status@broadcast", media, buildSendOptions(outSize));
+    }
+
+    logger.info({ mb }, "Video uploaded to WhatsApp Status");
+    whatsappEvents.emit("status_uploaded", { source: "manual" });
+  } finally {
+    if (orientedPath) try { fs.unlinkSync(orientedPath); } catch {}
+    if (processedPath) try { fs.unlinkSync(processedPath); } catch {}
+  }
+}
+
+// ─── Manual upload endpoint ───────────────────────────────────────────────────
+
+export async function uploadVideoToStatus(
+  filePath: string,
+  fileSize: number,
+  orientation?: Orientation | null,
+): Promise<void> {
+  if (!isReady) throw new Error("WhatsApp client is not ready");
+  logger.info({ filePath, fileSize, orientation }, "Manual upload started");
+  await sendFilePathToStatus(filePath, orientation);
+}
+
+// ─── Auto-status listener (chat messages) ────────────────────────────────────
 
 client.on("message_create", async (msg: any) => {
   try {
     if (!isTrustedSender(msg)) return;
 
-    const body = (msg.body as string)?.trim();
+    const body = (msg.body as string)?.trim() ?? "";
+
+    // ── TikTok URL variant: "Status...URL" or "Status... URL" ──────────────
+    const tikTokMatch = STATUS_TIKTOK_RE.exec(body);
+    if (tikTokMatch) {
+      const tiktokUrl = tikTokMatch[1]!;
+      logger.info({ tiktokUrl }, "TikTok Status trigger detected in chat");
+
+      let tiktokPath: string | null = null;
+      try {
+        tiktokPath = await downloadTikTokHD(tiktokUrl);
+        await sendFilePathToStatus(tiktokPath, null);
+
+        // Confirmation reply
+        try {
+          await msg.reply("✅ TikTok video is being uploaded to your Status!");
+        } catch {}
+      } finally {
+        if (tiktokPath) try { fs.unlinkSync(tiktokPath); } catch {}
+      }
+      return;
+    }
+
+    // ── Standard "Status..." trigger (direct video or quoted video) ─────────
     if (body !== STATUS_TRIGGER) return;
 
     logger.info({ from: msg.from, fromMe: msg.fromMe }, "Status trigger detected");
@@ -421,38 +604,6 @@ client.on("message_create", async (msg: any) => {
   }
 });
 
-// ─── Manual upload endpoint ───────────────────────────────────────────────────
-
-export async function uploadVideoToStatus(
-  filePath: string,
-  fileSize: number,
-): Promise<void> {
-  if (!isReady) throw new Error("WhatsApp client is not ready");
-
-  logger.info({ filePath, fileSize }, "Manual upload started");
-
-  let outputPath: string | null = null;
-  try {
-    outputPath = await processVideoSmartHD(filePath);
-    const media   = buildMediaFromFile(outputPath);
-    const outSize = media.filesize as number;
-    const mb      = (outSize / 1024 / 1024).toFixed(2);
-
-    if (outSize > DOCUMENT_FORCE_THRESHOLD_BYTES) {
-      logger.info({ mb }, "Large file — using Force Document Upload");
-      await sendAsDocumentThroughPage(media.data, outSize, "");
-    } else {
-      logger.info({ mb }, "Sending via standard status path");
-      await client.sendMessage("status@broadcast", media, buildSendOptions(outSize));
-    }
-
-    logger.info({ mb }, "Manual video uploaded to WhatsApp Status");
-    whatsappEvents.emit("status_uploaded", { source: "manual" });
-  } finally {
-    if (outputPath) try { fs.unlinkSync(outputPath); } catch {}
-  }
-}
-
 // ─── Init with retry ──────────────────────────────────────────────────────────
 
 const MAX_INIT_RETRIES = 3;
@@ -470,8 +621,6 @@ async function tryInitialize(attempt = 1): Promise<void> {
       logger.info({ delay }, `Retrying in ${delay / 1000}s...`);
       await new Promise((r) => setTimeout(r, delay));
 
-      // If the session appears stale (auth timeout), wipe it so the next
-      // attempt starts fresh and requests a new QR.
       if (msg.includes("auth timeout") || msg.includes("auth_failure")) {
         try {
           fs.rmSync(dataDir, { recursive: true, force: true });

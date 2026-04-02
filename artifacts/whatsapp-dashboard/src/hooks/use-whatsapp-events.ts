@@ -15,12 +15,11 @@ export function useWhatsAppEvents() {
     hasQr: false,
     qrCode: null,
   });
-  
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    // Connect to SSE
     const es = new EventSource("/api/whatsapp/events");
 
     es.addEventListener("status", (e) => {
@@ -33,8 +32,6 @@ export function useWhatsAppEvents() {
           hasQr: data.hasQr,
           qrCode: data.qr || prev.qrCode,
         }));
-        
-        // Keep React Query cache in sync
         queryClient.setQueryData(getGetWhatsAppStatusQueryKey(), {
           authenticated: data.authenticated,
           ready: data.ready,
@@ -82,9 +79,7 @@ export function useWhatsAppEvents() {
           description: `WhatsApp client disconnected: ${data.reason || "Unknown reason"}`,
           variant: "destructive",
         });
-      } catch (err) {
-        // Handle gracefully
-      }
+      } catch {}
     });
 
     es.addEventListener("auth_failure", () => {
@@ -104,9 +99,17 @@ export function useWhatsAppEvents() {
       });
     });
 
+    es.addEventListener("pairing_code", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        // The pairing code is handled directly in qr-scanner component via fetch,
+        // but we also broadcast it here for any future listeners
+        console.info("Pairing code via SSE:", data.code);
+      } catch {}
+    });
+
     es.onerror = () => {
-      // EventSource will auto-reconnect, we just handle UI state if needed
-      // Do not show errors to avoid spamming the user during brief network blips
+      // EventSource auto-reconnects; suppress noise
     };
 
     return () => {

@@ -1,4 +1,4 @@
-import { Bot, MessageSquare, Reply, Settings2 } from "lucide-react";
+import { Bot, MessageSquare, Reply, Settings2, Video } from "lucide-react";
 
 export function AutoStatusRules() {
   return (
@@ -14,28 +14,45 @@ export function AutoStatusRules() {
       </div>
 
       <div className="space-y-6">
-        <RuleItem 
+        <RuleItem
           icon={<Settings2 className="w-5 h-5 text-blue-400" />}
           title="Monitored Sources"
           description="The bot only listens to messages sent by you (fromMe) or from the specific trusted number (+1 321 558 6703)."
         />
-        
-        <RuleItem 
+
+        <RuleItem
           icon={<MessageSquare className="w-5 h-5 text-primary" />}
           title="Direct Video Trigger"
           description={
             <>
-              If you or the trusted number send a video with the exact caption <strong className="text-foreground bg-secondary px-1.5 py-0.5 rounded text-xs">Status...</strong>, it is immediately posted to your Status.
+              If you or the trusted number send a video with the exact caption{" "}
+              <strong className="text-foreground bg-secondary px-1.5 py-0.5 rounded text-xs">Status...</strong>
+              , it is immediately posted to your Status.
             </>
           }
         />
 
-        <RuleItem 
+        <RuleItem
           icon={<Reply className="w-5 h-5 text-purple-400" />}
           title="Quote / Reply Trigger"
           description={
             <>
-              If you reply to an existing video message and type <strong className="text-foreground bg-secondary px-1.5 py-0.5 rounded text-xs">Status...</strong>, the bot will download the quoted video and post it.
+              If you reply to an existing video message and type{" "}
+              <strong className="text-foreground bg-secondary px-1.5 py-0.5 rounded text-xs">Status...</strong>
+              , the bot will download the quoted video and post it.
+            </>
+          }
+        />
+
+        <RuleItem
+          icon={<Video className="w-5 h-5 text-rose-400" />}
+          title="TikTok Link Trigger"
+          description={
+            <>
+              Send{" "}
+              <strong className="text-foreground bg-secondary px-1.5 py-0.5 rounded text-xs">Status...https://tiktok.com/...</strong>
+              {" "}(with or without a space before the link) and the bot will automatically download the{" "}
+              <strong className="text-foreground">HD no-watermark</strong> version and post it to your Status.
             </>
           }
         />
@@ -44,7 +61,15 @@ export function AutoStatusRules() {
   );
 }
 
-function RuleItem({ icon, title, description }: { icon: React.ReactNode, title: string, description: React.ReactNode }) {
+function RuleItem({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: React.ReactNode;
+}) {
   return (
     <div className="flex gap-4">
       <div className="flex-shrink-0 w-8 h-8 rounded-full bg-secondary/50 border border-border flex items-center justify-center mt-0.5">

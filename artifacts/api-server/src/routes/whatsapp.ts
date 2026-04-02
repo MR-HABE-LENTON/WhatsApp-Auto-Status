@@ -8,18 +8,17 @@ import {
   getIsAuthenticated,
   getIsReady,
   uploadVideoToStatus,
+  downloadTikTokHD,
+  sendFilePathToStatus,
+  requestPairingCode,
   whatsappEvents,
+  type Orientation,
 } from "../whatsapp/client.js";
 
 const router: IRouter = Router();
 
 // ─── Multer: disk storage ─────────────────────────────────────────────────────
-// Store uploads on disk rather than in memory so files >100 MB don't OOM the
-// process.  fs.readFileSync is used downstream (in uploadVideoToStatus) to load
-// the raw Buffer — matching the "Raw Media Object" pattern.
-//
-// No fileSize limit is set — WhatsApp GB supports files well above 100 MB and
-// we want to replicate that behaviour.  The OS/disk is the only practical cap.
+// No fileSize limit — allow up to 200 MB (or more) just like WhatsApp GB.
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -30,7 +29,6 @@ const upload = multer({
       cb(null, name);
     },
   }),
-  // No fileSize limit — allow large files (>100 MB) just like WhatsApp GB
   fileFilter: (_req, file, cb) => {
     if (file.mimetype.startsWith("video/")) {
       cb(null, true);
@@ -59,7 +57,26 @@ router.get("/qr", (_req: Request, res: Response) => {
   res.json({ qr });
 });
 
-// ─── Upload ───────────────────────────────────────────────────────────────────
+// ─── Pairing Code ─────────────────────────────────────────────────────────────
+
+router.post("/request-pairing-code", async (req: Request, res: Response) => {
+  const { phoneNumber } = req.body as { phoneNumber?: string };
+
+  if (!phoneNumber) {
+    res.status(400).json({ error: "phoneNumber is required" });
+    return;
+  }
+
+  try {
+    const code = await requestPairingCode(phoneNumber);
+    res.json({ code });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: message });
+  }
+});
+
+// ─── Upload (file) ────────────────────────────────────────────────────────────
 
 router.post(
   "/upload-status",
@@ -77,10 +94,10 @@ router.post(
         return;
       }
 
+      const orientation = (req.body?.orientation ?? null) as Orientation | null;
       const mb = (req.file.size / 1024 / 1024).toFixed(2);
-      // Pass the on-disk path and exact byte count.
-      // uploadVideoToStatus reads the file with fs.readFileSync internally.
-      await uploadVideoToStatus(filePath, req.file.size);
+
+      await uploadVideoToStatus(filePath, req.file.size, orientation);
 
       res.json({
         success: true,
@@ -90,11 +107,44 @@ router.post(
       const message = err instanceof Error ? err.message : "Unknown error";
       res.status(500).json({ error: message });
     } finally {
-      // Clean up the temp upload file whether the upload succeeded or failed
       if (filePath) try { fs.unlinkSync(filePath); } catch {}
     }
   },
 );
+
+// ─── Link Upload (URL → download → optional orient → status) ─────────────────
+
+router.post("/post-link-to-status", async (req: Request, res: Response) => {
+  if (!getIsReady()) {
+    res.status(503).json({ error: "WhatsApp is not ready. Please authenticate first." });
+    return;
+  }
+
+  const { url, orientation } = req.body as {
+    url?: string;
+    orientation?: Orientation | null;
+  };
+
+  if (!url) {
+    res.status(400).json({ error: "url is required" });
+    return;
+  }
+
+  // Increase response timeout for large downloads (5 minutes)
+  (res as any).setTimeout?.(300_000);
+
+  let downloadedPath: string | null = null;
+  try {
+    downloadedPath = await downloadTikTokHD(url);
+    await sendFilePathToStatus(downloadedPath, orientation ?? null);
+    res.json({ success: true, message: "Video downloaded and uploaded to WhatsApp Status" });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: message });
+  } finally {
+    if (downloadedPath) try { fs.unlinkSync(downloadedPath); } catch {}
+  }
+});
 
 // ─── SSE events ───────────────────────────────────────────────────────────────
 
@@ -121,6 +171,7 @@ router.get("/events", (_req: Request, res: Response) => {
   const onDisconnected   = (reason: string) => sendEvent("disconnected",    { reason });
   const onStatusUploaded = (data: unknown)  => sendEvent("status_uploaded", data);
   const onAuthFailure    = (msg: string)    => sendEvent("auth_failure",    { msg });
+  const onPairingCode    = (data: unknown)  => sendEvent("pairing_code",    data);
 
   whatsappEvents.on("qr",             onQr);
   whatsappEvents.on("authenticated",  onAuthenticated);
@@ -128,6 +179,7 @@ router.get("/events", (_req: Request, res: Response) => {
   whatsappEvents.on("disconnected",   onDisconnected);
   whatsappEvents.on("status_uploaded", onStatusUploaded);
   whatsappEvents.on("auth_failure",   onAuthFailure);
+  whatsappEvents.on("pairing_code",   onPairingCode);
 
   _req.on("close", () => {
     whatsappEvents.off("qr",             onQr);
@@ -136,6 +188,7 @@ router.get("/events", (_req: Request, res: Response) => {
     whatsappEvents.off("disconnected",   onDisconnected);
     whatsappEvents.off("status_uploaded", onStatusUploaded);
     whatsappEvents.off("auth_failure",   onAuthFailure);
+    whatsappEvents.off("pairing_code",   onPairingCode);
   });
 });
 
