@@ -148,6 +148,31 @@ client.on("disconnected", (reason: string) => {
 // on the whatsapp-web.js client as an undocumented but stable API.
 //
 // Phone number must be digits only, including country code (e.g. 9665xxxxxxxx).
+//
+// WhatsApp's own page JS fires `window.onCodeReceivedEvent(code)` when the
+// server responds with the pairing code.  If that function is not defined in
+// the Puppeteer page context, whatsapp-web.js throws "window.onCodeReceivedEvent
+// is not a function".  We register it once via exposeFunction so both the
+// direct-return path and the callback path are handled gracefully.
+
+let _codeEventRegistered  = false;
+let _pendingCodeResolve: ((code: string) => void) | null = null;
+
+async function ensureOnCodeReceivedEvent(): Promise<void> {
+  if (_codeEventRegistered) return;
+  const page = (client as any).pupPage;
+  if (!page) return;
+  try {
+    await page.exposeFunction("onCodeReceivedEvent", (code: string) => {
+      logger.info({ code }, "onCodeReceivedEvent fired from browser page");
+      _pendingCodeResolve?.(code);
+      _pendingCodeResolve = null;
+    });
+  } catch {
+    // Already exposed on a previous call — safe to ignore
+  }
+  _codeEventRegistered = true;
+}
 
 export async function requestPairingCode(phoneNumber: string): Promise<string> {
   const digits = phoneNumber.replace(/\D/g, "");
@@ -167,19 +192,49 @@ export async function requestPairingCode(phoneNumber: string): Promise<string> {
     );
   }
 
+  // Register window.onCodeReceivedEvent in the Puppeteer page so WhatsApp's
+  // own JS can invoke it when the code arrives, preventing the crash.
+  await ensureOnCodeReceivedEvent();
+
+  // Promise that resolves if the code arrives via the page callback
+  const codeViaCallback = new Promise<string>((resolve) => {
+    _pendingCodeResolve = resolve;
+  });
+
   logger.info({ digits }, "Requesting pairing code");
 
-  // whatsapp-web.js exposes requestPairingCode() on the Client instance.
-  // It internally calls the WhatsApp pairing API and resolves with the
-  // 8-character code (e.g. "ABCD1234").
-  const raw = await (client as any).requestPairingCode(digits);
-  const code = String(raw ?? "").trim();
-
-  if (!code) {
-    throw new Error("WhatsApp returned an empty pairing code — check the phone number and try again");
+  try {
+    const raw  = await (client as any).requestPairingCode(digits);
+    const code = String(raw ?? "").trim();
+    _pendingCodeResolve = null; // cancel the callback listener — got it directly
+    if (!code) throw new Error("WhatsApp returned an empty pairing code — check the phone number and try again");
+    logger.info({ code }, "Pairing code received (direct return)");
+    whatsappEvents.emit("pairing_code", { code });
+    return code;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // If the error is specifically about onCodeReceivedEvent, the code will
+    // arrive via the exposeFunction callback instead — wait for it.
+    if (!msg.toLowerCase().includes("oncodereceivedevent")) {
+      _pendingCodeResolve = null;
+      throw err;
+    }
+    logger.info("requestPairingCode threw onCodeReceivedEvent error — waiting for callback");
   }
 
-  logger.info({ code }, "Pairing code received");
+  // Wait for the code via the page callback (30 s timeout)
+  const code = await Promise.race([
+    codeViaCallback,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => {
+        _pendingCodeResolve = null;
+        reject(new Error("Timed out waiting for pairing code — check the phone number and try again"));
+      }, 30_000),
+    ),
+  ]);
+
+  if (!code) throw new Error("WhatsApp returned an empty pairing code — check the phone number and try again");
+  logger.info({ code }, "Pairing code received (via page callback)");
   whatsappEvents.emit("pairing_code", { code });
   return code;
 }
@@ -215,90 +270,80 @@ function probeCodecs(filePath: string): Promise<CodecInfo> {
 }
 
 // ─── Smart FFmpeg Pipeline ────────────────────────────────────────────────────
+//
+// Three rules driven by file size and the shouldRotate flag:
+//
+//   RULE A – Original Quality (passthrough):
+//     size < 150 MB AND shouldRotate = false
+//     → "-c:v copy -c:a copy"  (zero re-encoding, exact original file preserved)
+//
+//   RULE B – High-Quality Rotation:
+//     shouldRotate = true AND size < 150 MB
+//     → transpose=1, libx264 crf=18, bitrate floor 8000k
+//
+//   RULE C – Massive File Compression (size ≥ 150 MB, any rotation):
+//     → libx264 crf=20, maxrate 8M, bufsize 16M
+//       (+ transpose=1 if shouldRotate)
 
-async function processVideoSmartHD(inputPath: string): Promise<string> {
-  const { isH264, isAac, videoCodec } = await probeCodecs(inputPath);
+const SIZE_150MB = 150 * 1024 * 1024;
 
-  const id         = `wa_status_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+export type Orientation = "vertical" | "horizontal"; // kept for TikTok route compat
+
+async function processVideo(
+  inputPath: string,
+  fileSizeBytes: number,
+  shouldRotate: boolean,
+): Promise<string> {
+  const id         = `wa_proc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const outputPath = path.join(os.tmpdir(), `${id}_out.mp4`);
 
-  let mode: "passthrough" | "partial" | "reencode";
+  let mode: string;
   let opts: string[];
 
-  if (isH264 && isAac) {
-    mode = "passthrough";
-    opts = ["-c:v copy", "-c:a copy", "-movflags +faststart"];
-  } else if (isH264 && !isAac) {
-    mode = "partial";
-    opts = ["-c:v copy", "-c:a aac", "-b:a 192k", "-movflags +faststart"];
-  } else {
-    mode = "reencode";
-    // No -vf scale here — preserve the original resolution and aspect ratio.
-    // Resizing is only applied when the caller explicitly requests orientation
-    // conversion via convertOrientation(), not during codec normalisation.
+  if (fileSizeBytes >= SIZE_150MB) {
+    // RULE C — large file: compress regardless, optionally rotate
+    mode = "rule-C-compress";
+    const vfParts = shouldRotate ? ["-vf", "transpose=1"] : [];
     opts = [
-      "-c:v libx264", "-crf 18", "-preset slow",
-      "-pix_fmt yuv420p",
-      "-c:a aac", "-b:a 192k",
-      "-movflags +faststart",
+      ...vfParts,
+      "-c:v", "libx264",
+      "-crf", "20",
+      "-maxrate", "8M",
+      "-bufsize", "16M",
+      "-c:a", "aac",
+      "-b:a", "192k",
+      "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart",
     ];
+  } else if (shouldRotate) {
+    // RULE B — rotate with high quality, file is under 150 MB
+    mode = "rule-B-rotate";
+    opts = [
+      "-vf", "transpose=1",
+      "-c:v", "libx264",
+      "-crf", "18",
+      "-b:v", "8000k",
+      "-c:a", "aac",
+      "-b:a", "192k",
+      "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart",
+    ];
+  } else {
+    // RULE A — passthrough, under 150 MB, no rotation
+    mode = "rule-A-passthrough";
+    opts = ["-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart"];
   }
 
-  logger.info({ mode, videoCodec, outputPath }, `ffmpeg — mode: ${mode}`);
+  const mb = (fileSizeBytes / 1024 / 1024).toFixed(1);
+  logger.info({ mode, mb, shouldRotate, outputPath }, "ffmpeg processing started");
 
   return new Promise((resolve, reject) => {
     ffmpeg(inputPath)
       .outputOptions(opts)
-      .on("start", (cmd) => logger.info({ cmd }, "ffmpeg started"))
+      .on("start", (cmd) => logger.info({ cmd }, "ffmpeg command"))
       .on("end", () => { logger.info({ mode }, "ffmpeg done"); resolve(outputPath); })
       .on("error", (err) => {
         logger.error({ err: err.message }, "ffmpeg error");
-        try { fs.unlinkSync(outputPath); } catch {}
-        reject(err);
-      })
-      .save(outputPath);
-  });
-}
-
-// ─── Orientation Conversion ───────────────────────────────────────────────────
-//
-// vertical  (9:16) → pad to 1080×1920 with black bars on top/bottom
-// horizontal (16:9) → pad to 1920×1080 with black bars on left/right
-
-export type Orientation = "vertical" | "horizontal";
-
-export async function convertOrientation(
-  inputPath: string,
-  orientation: Orientation,
-): Promise<string> {
-  const id         = `wa_orient_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const outputPath = path.join(os.tmpdir(), `${id}_oriented.mp4`);
-
-  // Rotate the video stream 90 degrees clockwise (transpose=1).
-  // No scaling or padding — the video is physically spun to fill the screen.
-  //
-  // Quality settings are intentionally strict:
-  //   -crf 18        → visually lossless (lower = better)
-  //   -preset slow   → maximise compression efficiency (less data loss)
-  //   -b:v 5000k     → explicit bitrate floor so WhatsApp cannot re-compress
-  // These mirror what WhatsApp GB sends for high-quality status uploads.
-  const vf = "transpose=1";
-
-  logger.info({ orientation, vf, outputPath }, "Converting orientation with HD quality settings");
-
-  return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
-      .outputOptions([
-        `-vf ${vf}`,
-        "-c:v libx264", "-crf 18", "-preset slow", "-b:v 5000k",
-        "-pix_fmt yuv420p",
-        "-c:a aac", "-b:a 192k",
-        "-movflags +faststart",
-      ])
-      .on("start", (cmd) => logger.info({ cmd }, "orientation ffmpeg started"))
-      .on("end", () => { logger.info({ orientation }, "orientation ffmpeg done"); resolve(outputPath); })
-      .on("error", (err) => {
-        logger.error({ err: err.message }, "orientation ffmpeg error");
         try { fs.unlinkSync(outputPath); } catch {}
         reject(err);
       })
@@ -517,7 +562,8 @@ async function sendVideoToStatus(raw: any, source: string): Promise<void> {
 
   let outputPath: string | null = null;
   try {
-    outputPath = await processVideoSmartHD(inputPath);
+    // Auto-upload from messages never rotates — apply Rule A or C based on size
+    outputPath = await processVideo(inputPath, inBytes, false);
     const media   = buildMediaFromFile(outputPath);
     const outSize = media.filesize as number;
     const mb      = (outSize / 1024 / 1024).toFixed(2);
@@ -542,18 +588,14 @@ async function sendVideoToStatus(raw: any, source: string): Promise<void> {
 
 export async function sendFilePathToStatus(
   inputPath: string,
-  orientation?: Orientation | null,
+  shouldRotate: boolean,
 ): Promise<void> {
-  let orientedPath: string | null = null;
+  const inBytes      = fs.statSync(inputPath).size;
   let processedPath: string | null = null;
 
   try {
-    // Optionally re-orient first
-    const workingPath =
-      orientation ? await convertOrientation(inputPath, orientation) : inputPath;
-    if (orientation) orientedPath = workingPath;
-
-    processedPath = await processVideoSmartHD(workingPath);
+    // Single processVideo call handles all three rules (A/B/C)
+    processedPath = await processVideo(inputPath, inBytes, shouldRotate);
     const media   = buildMediaFromFile(processedPath);
     const outSize = media.filesize as number;
     const mb      = (outSize / 1024 / 1024).toFixed(2);
@@ -569,7 +611,6 @@ export async function sendFilePathToStatus(
     logger.info({ mb }, "Video uploaded to WhatsApp Status");
     whatsappEvents.emit("status_uploaded", { source: "manual" });
   } finally {
-    if (orientedPath) try { fs.unlinkSync(orientedPath); } catch {}
     if (processedPath) try { fs.unlinkSync(processedPath); } catch {}
   }
 }
@@ -579,11 +620,11 @@ export async function sendFilePathToStatus(
 export async function uploadVideoToStatus(
   filePath: string,
   fileSize: number,
-  orientation?: Orientation | null,
+  shouldRotate: boolean,
 ): Promise<void> {
   if (!isReady) throw new Error("WhatsApp client is not ready");
-  logger.info({ filePath, fileSize, orientation }, "Manual upload started");
-  await sendFilePathToStatus(filePath, orientation);
+  logger.info({ filePath, fileSize, shouldRotate }, "Manual upload started");
+  await sendFilePathToStatus(filePath, shouldRotate);
 }
 
 // ─── Auto-status listener (chat messages) ────────────────────────────────────
@@ -603,7 +644,7 @@ client.on("message_create", async (msg: any) => {
       let tiktokPath: string | null = null;
       try {
         tiktokPath = await downloadTikTokHD(tiktokUrl);
-        await sendFilePathToStatus(tiktokPath, null);
+        await sendFilePathToStatus(tiktokPath, false);
 
         // Confirmation reply
         try {

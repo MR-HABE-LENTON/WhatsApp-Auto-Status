@@ -12,7 +12,6 @@ import {
   sendFilePathToStatus,
   requestPairingCode,
   whatsappEvents,
-  type Orientation,
 } from "../whatsapp/client.js";
 
 const router: IRouter = Router();
@@ -94,10 +93,10 @@ router.post(
         return;
       }
 
-      const orientation = (req.body?.orientation ?? null) as Orientation | null;
+      const shouldRotate = req.body?.shouldRotate === "true" || req.body?.shouldRotate === true;
       const mb = (req.file.size / 1024 / 1024).toFixed(2);
 
-      await uploadVideoToStatus(filePath, req.file.size, orientation);
+      await uploadVideoToStatus(filePath, req.file.size, shouldRotate);
 
       res.json({
         success: true,
@@ -122,7 +121,7 @@ router.post("/post-link-to-status", async (req: Request, res: Response) => {
 
   const { url, orientation } = req.body as {
     url?: string;
-    orientation?: Orientation | null;
+    orientation?: string | null;
   };
 
   if (!url) {
@@ -130,13 +129,16 @@ router.post("/post-link-to-status", async (req: Request, res: Response) => {
     return;
   }
 
+  // Convert legacy orientation field to the unified shouldRotate flag
+  const shouldRotate = !!orientation;
+
   // Increase response timeout for large downloads (5 minutes)
   (res as any).setTimeout?.(300_000);
 
   let downloadedPath: string | null = null;
   try {
     downloadedPath = await downloadTikTokHD(url);
-    await sendFilePathToStatus(downloadedPath, orientation ?? null);
+    await sendFilePathToStatus(downloadedPath, shouldRotate);
     res.json({ success: true, message: "Video downloaded and uploaded to WhatsApp Status" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";

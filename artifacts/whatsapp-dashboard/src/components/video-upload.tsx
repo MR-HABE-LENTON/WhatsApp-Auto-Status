@@ -1,15 +1,13 @@
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileVideo, X, Loader2, Play, AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter } from "lucide-react";
+import { UploadCloud, FileVideo, X, Loader2, Play, RotateCw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
-
-type Orientation = "vertical" | "horizontal" | null;
 
 export function VideoUpload() {
   const [file, setFile]               = useState<File | null>(null);
   const [preview, setPreview]         = useState<string | null>(null);
-  const [orientation, setOrientation] = useState<Orientation>(null);
+  const [shouldRotate, setShouldRotate] = useState(false);
   const [pending, setPending]         = useState(false);
   const { toast } = useToast();
 
@@ -36,7 +34,7 @@ export function VideoUpload() {
     setFile(null);
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
-    setOrientation(null);
+    setShouldRotate(false);
   };
 
   const handleUpload = async () => {
@@ -46,7 +44,7 @@ export function VideoUpload() {
     try {
       const formData = new FormData();
       formData.append("video", file);
-      if (orientation) formData.append("orientation", orientation);
+      if (shouldRotate) formData.append("shouldRotate", "true");
 
       const res = await fetch("/api/whatsapp/upload-status", {
         method: "POST",
@@ -60,7 +58,7 @@ export function VideoUpload() {
       setFile(null);
       if (preview) URL.revokeObjectURL(preview);
       setPreview(null);
-      setOrientation(null);
+      setShouldRotate(false);
     } catch (err: any) {
       toast({ title: "Upload Failed", description: err.message, variant: "destructive" });
     } finally {
@@ -143,7 +141,7 @@ export function VideoUpload() {
         </AnimatePresence>
       </div>
 
-      {/* ── Orientation buttons (only when file selected) ── */}
+      {/* ── Rotate button (only when file selected) ── */}
       <AnimatePresence>
         {file && (
           <motion.div
@@ -152,42 +150,22 @@ export function VideoUpload() {
             exit={{ opacity: 0, height: 0 }}
             className="overflow-hidden"
           >
-            <p className="text-xs text-muted-foreground font-medium mb-2 uppercase tracking-wide">
-              Orientation (optional)
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setOrientation((o) => o === "vertical" ? null : "vertical")}
-                disabled={pending}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border transition-all
-                  ${orientation === "vertical"
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-secondary/30 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-                  } disabled:opacity-50`}
-              >
-                <AlignVerticalJustifyCenter className="w-4 h-4" />
-                Vertical (9:16)
-              </button>
-              <button
-                type="button"
-                onClick={() => setOrientation((o) => o === "horizontal" ? null : "horizontal")}
-                disabled={pending}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border transition-all
-                  ${orientation === "horizontal"
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-secondary/30 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-                  } disabled:opacity-50`}
-              >
-                <AlignHorizontalJustifyCenter className="w-4 h-4" />
-                Horizontal (16:9)
-              </button>
-            </div>
-            {orientation && (
+            <button
+              type="button"
+              onClick={() => setShouldRotate((r) => !r)}
+              disabled={pending}
+              className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border transition-all
+                ${shouldRotate
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-secondary/30 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                } disabled:opacity-50`}
+            >
+              <RotateCw className="w-4 h-4" />
+              🔄 Rotate Video (90°)
+            </button>
+            {shouldRotate && (
               <p className="text-xs text-primary/70 mt-1.5">
-                {orientation === "vertical"
-                  ? "Will pad to 1080×1920 with black bars"
-                  : "Will pad to 1920×1080 with black bars"}
+                Video will be rotated 90° clockwise before posting
               </p>
             )}
           </motion.div>
@@ -210,14 +188,12 @@ export function VideoUpload() {
               {pending ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  {orientation ? "Converting & Uploading..." : "Uploading to Status..."}
+                  {shouldRotate ? "Rotating & Uploading..." : "Uploading to Status..."}
                 </>
               ) : (
                 <>
                   <UploadCloud className="w-5 h-5" />
-                  {orientation
-                    ? `Convert to ${orientation === "vertical" ? "Vertical" : "Horizontal"} & Post`
-                    : "Post to WhatsApp Status"}
+                  {shouldRotate ? "Rotate & Post to Status" : "Post to WhatsApp Status"}
                 </>
               )}
             </button>
