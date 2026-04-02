@@ -1,1 +1,2 @@
-2026/04/02-05:36:37.082 549 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/GCM Store/MANIFEST-000001
+2026/04/02-05:52:21.931 e1a Creating DB /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/GCM Store since it was missing.
+2026/04/02-05:52:21.948 e1a Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/GCM Store/MANIFEST-000001

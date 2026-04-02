@@ -142,16 +142,46 @@ client.on("disconnected", (reason: string) => {
 });
 
 // ─── Pairing Code ─────────────────────────────────────────────────────────────
+//
+// requestPairingCode must be called while the client is in the QR phase
+// (after initialization, before authentication).  The method is exposed
+// on the whatsapp-web.js client as an undocumented but stable API.
+//
+// Phone number must be digits only, including country code (e.g. 9665xxxxxxxx).
 
 export async function requestPairingCode(phoneNumber: string): Promise<string> {
-  // Strip everything except digits
   const digits = phoneNumber.replace(/\D/g, "");
-  if (!digits) throw new Error("Invalid phone number");
+  if (!digits || digits.length < 7) {
+    throw new Error("Invalid phone number — include country code, digits only");
+  }
+
+  if (isAuthenticated || isReady) {
+    throw new Error(
+      "Already authenticated. Pairing code can only be requested before linking a device.",
+    );
+  }
+
+  if (!(client as any).pupPage) {
+    throw new Error(
+      "WhatsApp client is still initializing. Wait for the QR code to appear, then try again.",
+    );
+  }
+
   logger.info({ digits }, "Requesting pairing code");
-  const code = await (client as any).requestPairingCode(digits);
+
+  // whatsapp-web.js exposes requestPairingCode() on the Client instance.
+  // It internally calls the WhatsApp pairing API and resolves with the
+  // 8-character code (e.g. "ABCD1234").
+  const raw = await (client as any).requestPairingCode(digits);
+  const code = String(raw ?? "").trim();
+
+  if (!code) {
+    throw new Error("WhatsApp returned an empty pairing code — check the phone number and try again");
+  }
+
   logger.info({ code }, "Pairing code received");
   whatsappEvents.emit("pairing_code", { code });
-  return code as string;
+  return code;
 }
 
 // ─── Codec Detection (ffprobe) ────────────────────────────────────────────────
@@ -203,9 +233,11 @@ async function processVideoSmartHD(inputPath: string): Promise<string> {
     opts = ["-c:v copy", "-c:a aac", "-b:a 192k", "-movflags +faststart"];
   } else {
     mode = "reencode";
+    // No -vf scale here — preserve the original resolution and aspect ratio.
+    // Resizing is only applied when the caller explicitly requests orientation
+    // conversion via convertOrientation(), not during codec normalisation.
     opts = [
       "-c:v libx264", "-crf 18", "-preset slow",
-      "-vf scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
       "-pix_fmt yuv420p",
       "-c:a aac", "-b:a 192k",
       "-movflags +faststart",
@@ -242,11 +274,13 @@ export async function convertOrientation(
   const id         = `wa_orient_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const outputPath = path.join(os.tmpdir(), `${id}_oriented.mp4`);
 
-  // scale to fit within target box, then pad to fill it
+  // Letterbox/pillarbox: scale down to fit inside the target box (never stretch),
+  // then pad the remaining space with black.  Using the named `color=` parameter
+  // avoids ambiguity in FFmpeg's positional pad filter parser.
   const vf =
     orientation === "vertical"
-      ? "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
-      : "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black";
+      ? "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black"
+      : "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black";
 
   logger.info({ orientation, vf, outputPath }, "Converting orientation");
 
