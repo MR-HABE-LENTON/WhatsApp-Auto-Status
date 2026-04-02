@@ -1,2 +1,3 @@
-2026/03/31-00:12:31.845 552 Creating DB /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Session Storage since it was missing.
-2026/03/31-00:12:31.874 552 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Session Storage/MANIFEST-000001
+2026/04/02-03:17:06.959 20f Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Session Storage/MANIFEST-000001
+2026/04/02-03:17:06.959 20f Recovering log #3
+2026/04/02-03:17:06.959 20f Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Session Storage/000003.log 
