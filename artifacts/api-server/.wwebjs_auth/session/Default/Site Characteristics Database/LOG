@@ -1,3 +1,2 @@
-2026/04/02-03:45:59.281 210 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Site Characteristics Database/MANIFEST-000001
-2026/04/02-03:45:59.285 210 Recovering log #3
-2026/04/02-03:45:59.286 210 Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Site Characteristics Database/000003.log 
+2026/04/02-05:36:34.044 54c Creating DB /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Site Characteristics Database since it was missing.
+2026/04/02-05:36:34.056 54c Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Site Characteristics Database/MANIFEST-000001
