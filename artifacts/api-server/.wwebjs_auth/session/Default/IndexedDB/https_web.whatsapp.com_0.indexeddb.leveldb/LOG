@@ -1,3 +1,4 @@
-2026/04/02-06:32:22.990 1517 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
-2026/04/02-06:32:22.990 1517 Recovering log #45
-2026/04/02-06:32:23.015 1517 Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000045.log 
+2026/04/02-07:09:30.805 1c46 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/02-07:09:30.805 1c46 Recovering log #12
+2026/04/02-07:09:30.849 1c46 Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000012.log 
+2026/04/02-07:09:30.851 1c46 Delete type=2 #11

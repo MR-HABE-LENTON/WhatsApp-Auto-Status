@@ -1,3 +1,2 @@
-2026/04/02-06:16:37.811 1134 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Service Worker/Database/MANIFEST-000001
-2026/04/02-06:16:37.811 1134 Recovering log #3
-2026/04/02-06:16:37.811 1134 Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Service Worker/Database/000003.log 
+2026/04/02-06:53:27.505 19dd Creating DB /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Service Worker/Database since it was missing.
+2026/04/02-06:53:27.516 19dd Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Service Worker/Database/MANIFEST-000001

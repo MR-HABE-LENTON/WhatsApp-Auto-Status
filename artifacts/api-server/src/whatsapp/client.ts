@@ -276,15 +276,21 @@ export async function convertOrientation(
 
   // Rotate the video stream 90 degrees clockwise (transpose=1).
   // No scaling or padding — the video is physically spun to fill the screen.
+  //
+  // Quality settings are intentionally strict:
+  //   -crf 18        → visually lossless (lower = better)
+  //   -preset slow   → maximise compression efficiency (less data loss)
+  //   -b:v 5000k     → explicit bitrate floor so WhatsApp cannot re-compress
+  // These mirror what WhatsApp GB sends for high-quality status uploads.
   const vf = "transpose=1";
 
-  logger.info({ orientation, vf, outputPath }, "Converting orientation");
+  logger.info({ orientation, vf, outputPath }, "Converting orientation with HD quality settings");
 
   return new Promise((resolve, reject) => {
     ffmpeg(inputPath)
       .outputOptions([
         `-vf ${vf}`,
-        "-c:v libx264", "-crf 18", "-preset fast",
+        "-c:v libx264", "-crf 18", "-preset slow", "-b:v 5000k",
         "-pix_fmt yuv420p",
         "-c:a aac", "-b:a 192k",
         "-movflags +faststart",

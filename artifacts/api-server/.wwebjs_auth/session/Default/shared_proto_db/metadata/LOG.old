@@ -1,3 +1,2 @@
-2026/04/02-06:16:37.933 1136 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/shared_proto_db/metadata/MANIFEST-000001
-2026/04/02-06:16:37.933 1136 Recovering log #3
-2026/04/02-06:16:37.933 1136 Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/shared_proto_db/metadata/000003.log 
+2026/04/02-06:53:26.458 19fb Creating DB /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/shared_proto_db/metadata since it was missing.
+2026/04/02-06:53:26.490 19fb Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/shared_proto_db/metadata/MANIFEST-000001
