@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { motion, AnimatePresence } from "framer-motion";
-import { RefreshCcw, Smartphone, Loader2, Copy, Check, Phone } from "lucide-react";
+import { RefreshCcw, Smartphone, Loader2, Copy, Check, Phone, AlertCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface QrScannerProps {
@@ -12,32 +12,41 @@ export function QrScanner({ qrCode }: QrScannerProps) {
   const [phone, setPhone]             = useState("");
   const [loading, setLoading]         = useState(false);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pairingError, setPairingError] = useState<string | null>(null);
   const [copied, setCopied]           = useState(false);
   const { toast } = useToast();
 
   const handleGetCode = async () => {
-    const digits = phone.replace(/\D/g, "");
-    if (!digits || digits.length < 7) {
-      toast({ title: "Invalid number", description: "Please enter a valid phone number with country code.", variant: "destructive" });
-      return;
-    }
+    if (!phone.trim()) return;
 
     setLoading(true);
     setPairingCode(null);
+    setPairingError(null);
+
     try {
       const res = await fetch("/api/whatsapp/request-pairing-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phoneNumber: digits }),
+        body: JSON.stringify({ phoneNumber: phone.trim() }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Failed to get pairing code");
+      if (!res.ok) {
+        // Show inline error for 400/500 — spinner stops immediately via finally
+        const msg: string = json.error ?? "Failed to generate code";
+        const isTimeout = msg.toLowerCase().startsWith("timeout");
+        setPairingError(
+          isTimeout
+            ? "Failed to generate code. Please enter the number starting with 9665..."
+            : msg,
+        );
+        return;
+      }
       const raw: string = json.code ?? "";
-      // Format as XXXX-XXXX if 8 chars
       const formatted = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw;
       setPairingCode(formatted);
     } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      setPairingError("Failed to generate code. Please enter the number starting with 9665...");
+      toast({ title: "Network Error", description: err.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -117,7 +126,7 @@ export function QrScanner({ qrCode }: QrScannerProps) {
             type="tel"
             placeholder="+966xxxxxxxxx"
             value={phone}
-            onChange={(e) => setPhone(e.target.value)}
+            onChange={(e) => { setPhone(e.target.value); setPairingError(null); }}
             disabled={loading}
             className="flex-1 px-3 py-2.5 text-sm rounded-xl border border-border bg-secondary/30 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
           />
@@ -139,6 +148,21 @@ export function QrScanner({ qrCode }: QrScannerProps) {
             )}
           </button>
         </div>
+
+        {/* ── Inline error message ── */}
+        <AnimatePresence>
+          {pairingError && (
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              className="flex items-start gap-2.5 rounded-xl border border-destructive/40 bg-destructive/10 px-3.5 py-3 text-sm text-destructive"
+            >
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{pairingError}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <AnimatePresence>
           {pairingCode && (

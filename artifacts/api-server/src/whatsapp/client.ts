@@ -174,10 +174,29 @@ async function ensureOnCodeReceivedEvent(): Promise<void> {
   _codeEventRegistered = true;
 }
 
-export async function requestPairingCode(phoneNumber: string): Promise<string> {
-  const digits = phoneNumber.replace(/\D/g, "");
-  if (!digits || digits.length < 7) {
-    throw new Error("Invalid phone number — include country code, digits only");
+// ─── Phone number normalisation ───────────────────────────────────────────────
+//
+// Accepts any user-typed format and returns digits-only with country code:
+//   "+966 54 123 4567" → "966541234567"
+//   "0541234567"       → "966541234567"  (Saudi local 05x format)
+//   "966541234567"     → "966541234567"  (already correct)
+
+function normalisePhone(raw: string): string {
+  let digits = raw.replace(/\D/g, "");
+  // Saudi local format: starts with "05" → replace leading "0" with "966"
+  if (digits.startsWith("05")) {
+    digits = "966" + digits.slice(1);
+  }
+  return digits;
+}
+
+export async function requestPairingCode(rawPhone: string): Promise<string> {
+  const digits = normalisePhone(rawPhone);
+
+  if (!digits || digits.length < 10) {
+    throw new Error(
+      "Invalid phone number — enter with country code, e.g. 9665xxxxxxxx or local 05xxxxxxxx",
+    );
   }
 
   if (isAuthenticated || isReady) {
@@ -196,45 +215,52 @@ export async function requestPairingCode(phoneNumber: string): Promise<string> {
   // own JS can invoke it when the code arrives, preventing the crash.
   await ensureOnCodeReceivedEvent();
 
-  // Promise that resolves if the code arrives via the page callback
-  const codeViaCallback = new Promise<string>((resolve) => {
-    _pendingCodeResolve = resolve;
-  });
-
   logger.info({ digits }, "Requesting pairing code");
 
-  try {
-    const raw  = await (client as any).requestPairingCode(digits);
-    const code = String(raw ?? "").trim();
-    _pendingCodeResolve = null; // cancel the callback listener — got it directly
-    if (!code) throw new Error("WhatsApp returned an empty pairing code — check the phone number and try again");
-    logger.info({ code }, "Pairing code received (direct return)");
-    whatsappEvents.emit("pairing_code", { code });
-    return code;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // If the error is specifically about onCodeReceivedEvent, the code will
-    // arrive via the exposeFunction callback instead — wait for it.
-    if (!msg.toLowerCase().includes("oncodereceivedevent")) {
+  // ── Ironclad 15-second timeout ────────────────────────────────────────────
+  // If Puppeteer hangs (e.g. WhatsApp rejects the number and never responds),
+  // the timeout promise wins the race and rejects with a clear message.
+
+  const TIMEOUT_MS = 15_000;
+  const TIMEOUT_ERROR = "Timeout: WhatsApp rejected the number or failed to generate a code.";
+
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => {
       _pendingCodeResolve = null;
-      throw err;
-    }
-    logger.info("requestPairingCode threw onCodeReceivedEvent error — waiting for callback");
-  }
+      reject(new Error(TIMEOUT_ERROR));
+    }, TIMEOUT_MS),
+  );
 
-  // Wait for the code via the page callback (30 s timeout)
-  const code = await Promise.race([
-    codeViaCallback,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => {
+  // Core pairing attempt — handles both direct-return and callback paths.
+  const pairingAttempt = async (): Promise<string> => {
+    // Set up callback listener before calling the library
+    const codeViaCallback = new Promise<string>((resolve) => {
+      _pendingCodeResolve = resolve;
+    });
+
+    try {
+      const raw  = await (client as any).requestPairingCode(digits);
+      const code = String(raw ?? "").trim();
+      _pendingCodeResolve = null;
+      if (!code) throw new Error("WhatsApp returned an empty pairing code — check the number and try again");
+      return code;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // If the error is specifically the missing onCodeReceivedEvent callback,
+      // the code will arrive via exposeFunction instead — wait for it.
+      if (!msg.toLowerCase().includes("oncodereceivedevent")) {
         _pendingCodeResolve = null;
-        reject(new Error("Timed out waiting for pairing code — check the phone number and try again"));
-      }, 30_000),
-    ),
-  ]);
+        throw err;
+      }
+      logger.info("requestPairingCode threw onCodeReceivedEvent error — waiting for page callback");
+      return await codeViaCallback;
+    }
+  };
 
-  if (!code) throw new Error("WhatsApp returned an empty pairing code — check the phone number and try again");
-  logger.info({ code }, "Pairing code received (via page callback)");
+  const code = await Promise.race([pairingAttempt(), timeoutPromise]);
+
+  if (!code) throw new Error("WhatsApp returned an empty pairing code — check the number and try again");
+  logger.info({ code }, "Pairing code received");
   whatsappEvents.emit("pairing_code", { code });
   return code;
 }

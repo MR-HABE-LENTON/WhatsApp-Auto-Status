@@ -71,7 +71,11 @@ router.post("/request-pairing-code", async (req: Request, res: Response) => {
     res.json({ code });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: message });
+    // Timeout and invalid-number errors are client problems → 400
+    const isClientError =
+      message.toLowerCase().startsWith("timeout") ||
+      message.toLowerCase().includes("invalid phone");
+    res.status(isClientError ? 400 : 500).json({ error: message });
   }
 });
 

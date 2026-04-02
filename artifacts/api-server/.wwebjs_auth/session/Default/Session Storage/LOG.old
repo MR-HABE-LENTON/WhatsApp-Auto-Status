@@ -1,1 +1,3 @@
-2026/04/02-23:07:48.637 381 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Session Storage/MANIFEST-000001
+2026/04/02-23:15:31.536 9c2 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Session Storage/MANIFEST-000001
+2026/04/02-23:15:31.537 9c2 Recovering log #3
+2026/04/02-23:15:31.537 9c2 Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Session Storage/000003.log 
