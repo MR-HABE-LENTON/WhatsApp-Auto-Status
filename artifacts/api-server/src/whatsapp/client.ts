@@ -274,13 +274,9 @@ export async function convertOrientation(
   const id         = `wa_orient_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const outputPath = path.join(os.tmpdir(), `${id}_oriented.mp4`);
 
-  // Letterbox/pillarbox: scale down to fit inside the target box (never stretch),
-  // then pad the remaining space with black.  Using the named `color=` parameter
-  // avoids ambiguity in FFmpeg's positional pad filter parser.
-  const vf =
-    orientation === "vertical"
-      ? "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black"
-      : "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black";
+  // Rotate the video stream 90 degrees clockwise (transpose=1).
+  // No scaling or padding — the video is physically spun to fill the screen.
+  const vf = "transpose=1";
 
   logger.info({ orientation, vf, outputPath }, "Converting orientation");
 
