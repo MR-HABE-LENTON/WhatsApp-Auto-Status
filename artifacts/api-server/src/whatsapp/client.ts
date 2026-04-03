@@ -112,6 +112,22 @@ client.on("qr", (qr: string) => {
   qrCodeData = qr;
   isAuthenticated = false;
   whatsappEvents.emit("qr", qr);
+
+  // Attach browser console listener once the page is live so we can
+  // see WhatsApp Web's internal error messages (e.g. pairing rejections).
+  const page = (client as any).pupPage;
+  if (page && !page._wwaConsoleAttached) {
+    page._wwaConsoleAttached = true;
+    page.on("console", (msg: any) => {
+      const type = msg.type?.();
+      if (type === "error" || type === "warning") {
+        logger.warn({ browserConsole: msg.text?.() }, "WhatsApp browser console");
+      }
+    });
+    page.on("pageerror", (err: Error) => {
+      logger.warn({ pageerror: err.message }, "WhatsApp page error");
+    });
+  }
 });
 
 client.on("authenticated", () => {
@@ -241,28 +257,130 @@ export async function requestPairingCode(rawPhone: string): Promise<string> {
     }, TIMEOUT_MS),
   );
 
-  // ── Single call attempt (handles both return-value and callback paths) ─────
+  // ── Single call attempt ───────────────────────────────────────────────────
+  // We bypass whatsapp-web.js's requestPairingCode() and drive pupPage.evaluate()
+  // ourselves with full per-step error capture.
+  //
+  // Strategy:
+  //  • Always clear codeInterval first (matches whatsapp-web.js).
+  //  • Try the full flow: setPairingType → initializeAltDeviceLinking → startAltLinkingFlow.
+  //  • If initializeAltDeviceLinking throws CompanionHelloError (happens on some
+  //    sessions/numbers), fall back to calling startAltLinkingFlow directly.
+  //  • Return a fully-serialised result object so we can log details in Node.js.
+  type EvalResult =
+    | { ok: true;  code: string }
+    | { ok: false; step: string; errMsg: string; errName: string; errStr: string; errProps: Record<string, string> };
+
   const singleAttempt = async (): Promise<string> => {
+    const page = (client as any).pupPage;
+
+    // Register callback BEFORE calling into the page so we never miss an early fire.
     const codeViaCallback = new Promise<string>((resolve) => {
       _pendingCodeResolve = resolve;
     });
 
-    try {
-      const raw  = await (client as any).requestPairingCode(digits);
-      const code = String(raw ?? "").trim();
-      _pendingCodeResolve = null;
-      return code; // may be empty — caller checks
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // If the error is specifically the missing onCodeReceivedEvent callback,
-      // the code will arrive via exposeFunction instead — wait for it.
-      if (!msg.toLowerCase().includes("oncodereceivedevent")) {
-        _pendingCodeResolve = null;
-        throw err;
+    const result: EvalResult = await page.evaluate(async (phoneNumber: string) => {
+      // ─── helper: serialise any thrown value ──────────────────────────────
+      const serr = (err: any, step: string): EvalResult => {
+        const props: Record<string, string> = { step };
+        try {
+          for (const k of Object.keys(err || {})) {
+            try {
+              const v = (err as any)[k];
+              props[k] = typeof v === "object" ? JSON.stringify(v) : String(v);
+            } catch { props[k] = "(unserializable)"; }
+          }
+          if (err?.stack) props["stack"] = String(err.stack).slice(0, 400);
+        } catch { /* ignore */ }
+        return { ok: false, step, errMsg: String(err?.message ?? ""), errName: String(err?.name ?? ""), errStr: String(err), errProps: props };
+      };
+
+      // ─── wait for PairingCodeLinkUtils ───────────────────────────────────
+      let waited = 0;
+      while (!(window as any).AuthStore?.PairingCodeLinkUtils && waited < 5_000) {
+        await new Promise((r) => setTimeout(r, 250));
+        waited += 250;
       }
-      logger.info("onCodeReceivedEvent error — waiting for page callback");
-      return await codeViaCallback;
+      if (!(window as any).AuthStore?.PairingCodeLinkUtils) {
+        return { ok: false, step: "wait", errMsg: "PairingCodeLinkUtils not ready", errName: "NotReady", errStr: "NotReady", errProps: {} };
+      }
+      const utils = (window as any).AuthStore.PairingCodeLinkUtils;
+
+      // ─── clear any old refresh interval (matches whatsapp-web.js) ────────
+      if ((window as any).codeInterval) clearInterval((window as any).codeInterval);
+
+      // ─── setPairingType ───────────────────────────────────────────────────
+      try { utils.setPairingType("ALT_DEVICE_LINKING"); }
+      catch (err: any) { return serr(err, "setPairingType"); }
+
+      // ─── initializeAltDeviceLinking (optional — skip on CompanionHelloError) ─
+      let skipInit = false;
+      try {
+        await utils.initializeAltDeviceLinking();
+      } catch (err: any) {
+        const name = String(err?.name ?? err?.message ?? "");
+        if (name.toLowerCase().includes("companionhello") || name === "t") {
+          skipInit = true; // known transient error — try startAltLinkingFlow directly
+        } else {
+          return serr(err, "initializeAltDeviceLinking");
+        }
+      }
+
+      // ─── startAltLinkingFlow ──────────────────────────────────────────────
+      let codeStr = "";
+      try {
+        const raw = await utils.startAltLinkingFlow(phoneNumber, true);
+        codeStr = typeof raw === "string" ? raw.trim() : "";
+      } catch (err: any) {
+        const r = serr(err, "startAltLinkingFlow");
+        (r as any).skippedInit = skipInit;
+        return r;
+      }
+
+      // ─── fire Node.js callback ────────────────────────────────────────────
+      if (typeof (window as any).onCodeReceivedEvent === "function") {
+        (window as any).onCodeReceivedEvent(codeStr);
+      }
+
+      return { ok: true, code: codeStr };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }, digits) as EvalResult;
+
+    logger.info({ pairingResult: result }, "Page.evaluate pairing result");
+
+    if (result.ok) {
+      const directCode = result.code;
+      if (directCode) {
+        _pendingCodeResolve = null;
+        return directCode;
+      }
+      // ok but empty — wait up to 5 s for callback
+      logger.info("startAltLinkingFlow returned empty code — awaiting callback");
+      const code = await Promise.race([
+        codeViaCallback,
+        new Promise<string>((resolve) => setTimeout(() => resolve(""), 5_000)),
+      ]);
+      _pendingCodeResolve = null;
+      return code;
     }
+
+    // Failed — check if callback resolved (code delivered via interval/other path)
+    const cbCode = await Promise.race([
+      codeViaCallback,
+      new Promise<string>((resolve) => setTimeout(() => resolve(""), 500)),
+    ]);
+    _pendingCodeResolve = null;
+
+    if (cbCode) return cbCode;
+
+    // Surface meaningful error with full detail
+    const e = result as Extract<EvalResult, { ok: false }>;
+    throw new Error(
+      `WhatsApp rejected the request at step "${e.step}" — ${e.errName}: ${e.errMsg || e.errStr}` +
+      (Object.keys(e.errProps).length > 1
+        ? " | " + JSON.stringify(e.errProps)
+        : ""),
+    );
   };
 
   // ── Fix #1 — Wait & Retry logic ───────────────────────────────────────────

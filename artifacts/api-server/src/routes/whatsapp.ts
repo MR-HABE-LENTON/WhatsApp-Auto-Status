@@ -71,11 +71,23 @@ router.post("/request-pairing-code", async (req: Request, res: Response) => {
     res.json({ code });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    // Timeout and invalid-number errors are client problems → 400
+    const lower = message.toLowerCase();
+    // Rate-limit from WhatsApp server → 429
+    const isRateLimit =
+      lower.includes("rateoverlimit") ||
+      lower.includes("rate-overlimit") ||
+      lower.includes("rate_overlimit") ||
+      lower.includes('"code":429') ||
+      lower.includes("429");
+    // Timeout or invalid-number errors are client problems → 400
     const isClientError =
-      message.toLowerCase().startsWith("timeout") ||
-      message.toLowerCase().includes("invalid phone");
-    res.status(isClientError ? 400 : 500).json({ error: message });
+      lower.startsWith("timeout") ||
+      lower.includes("invalid phone");
+    const status = isRateLimit ? 429 : isClientError ? 400 : 500;
+    const userMessage = isRateLimit
+      ? "WhatsApp has rate-limited this number. Please wait 15–30 minutes before requesting a new code."
+      : message;
+    res.status(status).json({ error: userMessage });
   }
 });
 

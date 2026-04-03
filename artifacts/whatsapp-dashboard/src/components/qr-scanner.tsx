@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { motion, AnimatePresence } from "framer-motion";
-import { RefreshCcw, Smartphone, Loader2, Copy, Check, Phone, AlertCircle } from "lucide-react";
+import { RefreshCcw, Smartphone, Loader2, Copy, Check, Phone, AlertCircle, Clock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface QrScannerProps {
@@ -13,6 +13,7 @@ export function QrScanner({ qrCode }: QrScannerProps) {
   const [loading, setLoading]         = useState(false);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [pairingError, setPairingError] = useState<string | null>(null);
+  const [isRateLimited, setIsRateLimited] = useState(false);
   const [copied, setCopied]           = useState(false);
   const { toast } = useToast();
 
@@ -22,6 +23,7 @@ export function QrScanner({ qrCode }: QrScannerProps) {
     setLoading(true);
     setPairingCode(null);
     setPairingError(null);
+    setIsRateLimited(false);
 
     try {
       const res = await fetch("/api/whatsapp/request-pairing-code", {
@@ -31,12 +33,16 @@ export function QrScanner({ qrCode }: QrScannerProps) {
       });
       const json = await res.json();
       if (!res.ok) {
-        // Show inline error for 400/500 — spinner stops immediately via finally
         const msg: string = json.error ?? "Failed to generate code";
+        if (res.status === 429) {
+          setIsRateLimited(true);
+          setPairingError(msg);
+          return;
+        }
         const isTimeout = msg.toLowerCase().startsWith("timeout");
         setPairingError(
           isTimeout
-            ? "Failed to generate code. Please enter the number starting with 9665..."
+            ? "Timed out. Please wait a moment, then try again."
             : msg,
         );
         return;
@@ -126,7 +132,7 @@ export function QrScanner({ qrCode }: QrScannerProps) {
             type="tel"
             placeholder="+966xxxxxxxxx"
             value={phone}
-            onChange={(e) => { setPhone(e.target.value); setPairingError(null); }}
+            onChange={(e) => { setPhone(e.target.value); setPairingError(null); setIsRateLimited(false); }}
             disabled={loading}
             className="flex-1 px-3 py-2.5 text-sm rounded-xl border border-border bg-secondary/30 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
           />
@@ -156,9 +162,15 @@ export function QrScanner({ qrCode }: QrScannerProps) {
               initial={{ opacity: 0, y: -4 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
-              className="flex items-start gap-2.5 rounded-xl border border-destructive/40 bg-destructive/10 px-3.5 py-3 text-sm text-destructive"
+              className={
+                isRateLimited
+                  ? "flex items-start gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-3 text-sm text-amber-400"
+                  : "flex items-start gap-2.5 rounded-xl border border-destructive/40 bg-destructive/10 px-3.5 py-3 text-sm text-destructive"
+              }
             >
-              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              {isRateLimited
+                ? <Clock className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                : <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />}
               <span>{pairingError}</span>
             </motion.div>
           )}
