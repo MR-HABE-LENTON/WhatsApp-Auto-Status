@@ -17,7 +17,7 @@ export function VideoUpload() {
       setFile(selected);
       const objectUrl = URL.createObjectURL(selected);
       setPreview(objectUrl);
-      setOrientation(null);
+      setShouldRotate(false);
     }
   }, []);
 

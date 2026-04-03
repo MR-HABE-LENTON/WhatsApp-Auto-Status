@@ -662,6 +662,16 @@ async function sendAsDocumentThroughPage(
         sendMediaAsDocument: true,
         sendMediaAsHd:       true,
         sendVideoAsGif:      false,
+        extra: {
+          isHd:               true,
+          unsafeDirectUpload: true,
+          size:               size,
+          mediaMetadata: {
+            width:      1080,
+            height:     1920,
+            isViewOnce: false,
+          },
+        },
       });
     },
     base64,

@@ -1,14 +1,12 @@
 import { useState } from "react";
-import { Link2, Loader2, Send, AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Download } from "lucide-react";
+import { Link2, Loader2, Send, Download, RotateCw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 
-type Orientation = "vertical" | "horizontal" | null;
-
 export function LinkUpload() {
-  const [url, setUrl]                 = useState("");
-  const [orientation, setOrientation] = useState<Orientation>(null);
-  const [loading, setLoading]         = useState(false);
+  const [url, setUrl]               = useState("");
+  const [shouldRotate, setShouldRotate] = useState(false);
+  const [loading, setLoading]       = useState(false);
   const { toast } = useToast();
 
   const isTikTok = /tiktok\.com|tiktok\.link|vm\.tiktok|vt\.tiktok/i.test(url);
@@ -26,19 +24,19 @@ export function LinkUpload() {
       const res = await fetch("/api/whatsapp/post-link-to-status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: trimmed, orientation: orientation ?? undefined }),
+        body: JSON.stringify({ url: trimmed, orientation: shouldRotate ? "vertical" : undefined }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Failed to process link");
 
       toast({
         title: "Posted to Status",
-        description: orientation
-          ? `Video downloaded, converted to ${orientation}, and uploaded to Status.`
+        description: shouldRotate
+          ? "Video downloaded, rotated 90°, and uploaded to Status."
           : "Video downloaded and uploaded to your WhatsApp Status.",
       });
       setUrl("");
-      setOrientation(null);
+      setShouldRotate(false);
     } catch (err: any) {
       toast({ title: "Link Upload Failed", description: err.message, variant: "destructive" });
     } finally {
@@ -78,47 +76,25 @@ export function LinkUpload() {
         )}
       </div>
 
-      {/* ── Orientation buttons ── */}
-      <div className="flex flex-col gap-2">
-        <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">
-          Orientation (optional)
+      {/* ── Rotate button ── */}
+      <button
+        type="button"
+        onClick={() => setShouldRotate((r) => !r)}
+        disabled={loading}
+        className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border transition-all
+          ${shouldRotate
+            ? "border-primary bg-primary/10 text-primary"
+            : "border-border bg-secondary/30 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+          } disabled:opacity-50`}
+      >
+        <RotateCw className="w-4 h-4" />
+        🔄 Rotate Video (90°)
+      </button>
+      {shouldRotate && (
+        <p className="text-xs text-primary/70 -mt-3">
+          Video will be rotated 90° clockwise before posting
         </p>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setOrientation((o) => o === "vertical" ? null : "vertical")}
-            disabled={loading}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border transition-all
-              ${orientation === "vertical"
-                ? "border-primary bg-primary/10 text-primary"
-                : "border-border bg-secondary/30 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-              } disabled:opacity-50`}
-          >
-            <AlignVerticalJustifyCenter className="w-4 h-4" />
-            Vertical (9:16)
-          </button>
-          <button
-            type="button"
-            onClick={() => setOrientation((o) => o === "horizontal" ? null : "horizontal")}
-            disabled={loading}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border transition-all
-              ${orientation === "horizontal"
-                ? "border-primary bg-primary/10 text-primary"
-                : "border-border bg-secondary/30 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-              } disabled:opacity-50`}
-          >
-            <AlignHorizontalJustifyCenter className="w-4 h-4" />
-            Horizontal (16:9)
-          </button>
-        </div>
-        {orientation && (
-          <p className="text-xs text-primary/70">
-            {orientation === "vertical"
-              ? "Black padding added to sides → 1080×1920"
-              : "Black padding added to top/bottom → 1920×1080"}
-          </p>
-        )}
-      </div>
+      )}
 
       {/* ── Submit button ── */}
       <button
@@ -147,9 +123,7 @@ export function LinkUpload() {
               className="flex items-center gap-2"
             >
               <Send className="w-5 h-5" />
-              {orientation
-                ? `Fetch, Convert to ${orientation === "vertical" ? "9:16" : "16:9"} & Post`
-                : "Fetch & Post to Status"}
+              {shouldRotate ? "Fetch, Rotate & Post to Status" : "Fetch & Post to Status"}
             </motion.span>
           )}
         </AnimatePresence>
