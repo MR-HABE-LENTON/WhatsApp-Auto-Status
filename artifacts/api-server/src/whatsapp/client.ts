@@ -549,13 +549,36 @@ async function processVideo(
 // Primary:  ssstik.io  — scrapes the "Without Watermark (HD)" link directly.
 // Fallback: tikwm.com  — JSON API, used if ssstik.io fails.
 
-/** Extract the href nearest to a regex match in an HTML snippet. */
-function extractHref(html: string, pattern: RegExp): string | null {
-  const idx = html.search(pattern);
-  if (idx === -1) return null;
-  const window = html.slice(Math.max(0, idx - 400), idx + 400);
-  const m = /href="(https?:\/\/[^"]+)"/.exec(window);
-  return m?.[1] ?? null;
+/**
+ * Extract the "Without Watermark HD" href from ssstik.io's HTML response.
+ *
+ * ssstik.io renders two download buttons:
+ *   id="ConvertURLResult_download_btn"    → Without Watermark  (SD)
+ *   id="ConvertURLResult_download_btn_hd" → Without Watermark (HD)  ← we want this one
+ *
+ * Three strategies, most-to-least precise, so we never accidentally grab the SD link.
+ */
+function extractSsstikHdUrl(html: string): string | null {
+  // Strategy 1a: id attribute appears before href in the same <a> tag
+  let m = /<a[^>]*\bid="[^"]*_hd"[^>]*\bhref="(https?:\/\/[^"]+)"/.exec(html);
+  if (m?.[1]) return m[1];
+
+  // Strategy 1b: href attribute appears before id in the same <a> tag
+  m = /<a[^>]*\bhref="(https?:\/\/[^"]+)"[^>]*\bid="[^"]*_hd"/.exec(html);
+  if (m?.[1]) return m[1];
+
+  // Strategy 2: anchor whose visible label contains both "HD" and "watermark"
+  // (e.g. "Without Watermark (HD)") — but NOT a plain "Without Watermark" label
+  for (const anchor of html.matchAll(/<a([^>]+)>([^<]{3,120})<\/a>/gi)) {
+    const attrs = anchor[1] ?? "";
+    const text  = (anchor[2] ?? "").trim();
+    if (/\bHD\b/.test(text) && /watermark/i.test(text)) {
+      const hm = /href="(https?:\/\/[^"]+)"/.exec(attrs);
+      if (hm?.[1]) return hm[1];
+    }
+  }
+
+  return null;
 }
 
 async function downloadViaSsstik(tiktokUrl: string): Promise<string> {
@@ -581,14 +604,13 @@ async function downloadViaSsstik(tiktokUrl: string): Promise<string> {
     },
   );
 
-  // Step 3 — find the HD without-watermark link (multiple fallback patterns)
-  const videoUrl =
-    extractHref(html, /ConvertURLResult_download_btn_hd/)   ||
-    extractHref(html, /Without\s+Watermark[^<]*HD/i)        ||
-    extractHref(html, /without[_-]?watermark.*hd/i)         ||
-    extractHref(html, /hdplay|_hd\./i);
-
-  if (!videoUrl) throw new Error("ssstik.io: HD download URL not found in response");
+  // Step 3 — extract ONLY the HD without-watermark link
+  const videoUrl = extractSsstikHdUrl(html);
+  if (!videoUrl) {
+    // Log a snippet to help debug if the page structure changes
+    logger.warn({ snippet: html.slice(0, 600) }, "ssstik.io: HD URL not found — page structure may have changed");
+    throw new Error("ssstik.io: HD download URL not found in response");
+  }
 
   logger.info({ videoUrl: videoUrl.slice(0, 80) }, "ssstik.io HD URL resolved");
 
