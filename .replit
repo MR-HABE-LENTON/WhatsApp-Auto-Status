@@ -34,13 +34,13 @@ args = "API Server"
 name = "Start application"
 author = "agent"
 
-[workflows.workflow.metadata]
-outputType = "webview"
-
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "PORT=23097 BASE_PATH=/ pnpm --filter @workspace/whatsapp-dashboard run dev"
 waitForPort = 23097
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [[workflows.workflow]]
 name = "API Server"
