@@ -45,8 +45,9 @@ const TRUSTED_NUMBER       = "+13215586703";
 const STATUS_TRIGGER       = "Status...";
 const ROTATE_STATUS_TRIGGER = "RStatus...";
 
-// Regex: "Status..." optionally followed by a space, then a URL
-const STATUS_TIKTOK_RE = /^Status\.\.\.\s*(https?:\/\/\S+)/i;
+// Regex: "Status..." or "RStatus..." followed by a URL
+const STATUS_TIKTOK_RE        = /^Status\.\.\.\s*(https?:\/\/\S+)/i;
+const ROTATE_STATUS_TIKTOK_RE = /^RStatus\.\.\.\s*(https?:\/\/\S+)/i;
 
 const dataDir = path.resolve(process.cwd(), ".wwebjs_auth");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -981,69 +982,108 @@ client.on("message_create", async (msg: any) => {
 
     const body = (msg.body as string)?.trim() ?? "";
 
-    // ── TikTok / direct URL variant: "Status... URL" ───────────────────────
-    const tikTokMatch = STATUS_TIKTOK_RE.exec(body);
-    if (tikTokMatch) {
-      const tiktokUrl = tikTokMatch[1]!;
-      logger.info({ tiktokUrl }, "URL Status trigger detected in chat");
-
+    // ── "RStatus... URL" — download + force-rotate 90° + upload ────────────
+    const rUrlMatch = ROTATE_STATUS_TIKTOK_RE.exec(body);
+    if (rUrlMatch) {
+      const tiktokUrl = rUrlMatch[1]!;
+      logger.info({ tiktokUrl }, "RStatus URL trigger — download + force rotate");
       let tiktokPath: string | null = null;
       try {
         tiktokPath = await downloadTikTokHD(tiktokUrl);
-        // Auto-rotate: if the video is landscape, rotate to portrait
-        await sendFilePathToStatus(tiktokPath, false, true);
-
-        try { await msg.reply("✅ تم تحميل الفيديو ورفعه إلى حالتك!"); } catch {}
+        // Force rotate = true (user requested it explicitly)
+        await sendFilePathToStatus(tiktokPath, true, false);
+        try { await msg.reply("✅ تم تحميل الفيديو وتدويره ورفعه إلى حالتك!"); } catch {}
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        logger.error({ err: detail }, "RStatus URL handler failed");
+        try { await msg.reply(`❌ فشل الرفع بتدوير:\n${detail}`); } catch {}
       } finally {
         if (tiktokPath) try { fs.unlinkSync(tiktokPath); } catch {}
       }
       return;
     }
 
-    // ── "RStatus..." trigger — upload with 90° rotation ────────────────────
+    // ── "Status... URL" — download + auto-detect rotation + upload ──────────
+    const urlMatch = STATUS_TIKTOK_RE.exec(body);
+    if (urlMatch) {
+      const tiktokUrl = urlMatch[1]!;
+      logger.info({ tiktokUrl }, "Status URL trigger — download + auto-rotate");
+      let tiktokPath: string | null = null;
+      try {
+        tiktokPath = await downloadTikTokHD(tiktokUrl);
+        // Auto-rotate: rotate only if video is landscape
+        await sendFilePathToStatus(tiktokPath, false, true);
+        try { await msg.reply("✅ تم تحميل الفيديو ورفعه إلى حالتك!"); } catch {}
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        logger.error({ err: detail }, "Status URL handler failed");
+        try { await msg.reply(`❌ فشل الرفع:\n${detail}`); } catch {}
+      } finally {
+        if (tiktokPath) try { fs.unlinkSync(tiktokPath); } catch {}
+      }
+      return;
+    }
+
+    // ── "RStatus..." — direct / quoted video with forced 90° rotation ───────
     if (body === ROTATE_STATUS_TRIGGER) {
       logger.info({ from: msg.from, fromMe: msg.fromMe }, "RStatus trigger — rotating upload");
+      try {
+        if (msg.hasQuotedMsg) {
+          const quoted = await msg.getQuotedMessage();
+          if (quoted.hasMedia) {
+            const raw = await downloadMediaWithTimeout(quoted);
+            await sendVideoToStatus(raw, "quoted", true);
+            try { await msg.reply("✅ تم رفع الفيديو بتدوير 90°!"); } catch {}
+          } else {
+            try { await msg.reply("❌ الرسالة المقتبسة لا تحتوي على فيديو."); } catch {}
+          }
+          return;
+        }
+        if (msg.hasMedia) {
+          const raw = await downloadMediaWithTimeout(msg);
+          await sendVideoToStatus(raw, "direct", true);
+          try { await msg.reply("✅ تم رفع الفيديو بتدوير 90°!"); } catch {}
+        } else {
+          try { await msg.reply("❌ أرسل فيديو مع الأمر RStatus... أو اقتبس فيديو أو أضف رابطاً."); } catch {}
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        logger.error({ err: detail }, "RStatus media handler failed");
+        try { await msg.reply(`❌ خطأ أثناء التدوير والرفع:\n${detail}`); } catch {}
+      }
+      return;
+    }
 
+    // ── "Status..." — direct / quoted video upload ──────────────────────────
+    if (body !== STATUS_TRIGGER) return;
+
+    logger.info({ from: msg.from, fromMe: msg.fromMe }, "Status trigger detected");
+    try {
       if (msg.hasQuotedMsg) {
         const quoted = await msg.getQuotedMessage();
         if (quoted.hasMedia) {
           const raw = await downloadMediaWithTimeout(quoted);
-          await sendVideoToStatus(raw, "quoted", true);
+          await sendVideoToStatus(raw, "quoted");
+          try { await msg.reply("✅ تم رفع الفيديو إلى حالتك!"); } catch {}
         } else {
-          logger.warn("Quoted message has no media");
+          try { await msg.reply("❌ الرسالة المقتبسة لا تحتوي على فيديو."); } catch {}
         }
         return;
       }
-
       if (msg.hasMedia) {
         const raw = await downloadMediaWithTimeout(msg);
-        await sendVideoToStatus(raw, "direct", true);
-      }
-      return;
-    }
-
-    // ── Standard "Status..." trigger (direct video or quoted video) ─────────
-    if (body !== STATUS_TRIGGER) return;
-
-    logger.info({ from: msg.from, fromMe: msg.fromMe }, "Status trigger detected");
-
-    if (msg.hasQuotedMsg) {
-      const quoted = await msg.getQuotedMessage();
-      if (quoted.hasMedia) {
-        const raw = await downloadMediaWithTimeout(quoted);
-        await sendVideoToStatus(raw, "quoted");
+        await sendVideoToStatus(raw, "direct");
+        try { await msg.reply("✅ تم رفع الفيديو إلى حالتك!"); } catch {}
       } else {
-        logger.warn("Quoted message has no media");
+        try { await msg.reply("❌ أرسل فيديو مع الأمر Status... أو اقتبس فيديو."); } catch {}
       }
-      return;
-    }
-
-    if (msg.hasMedia) {
-      const raw = await downloadMediaWithTimeout(msg);
-      await sendVideoToStatus(raw, "direct");
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      logger.error({ err: detail }, "Status media handler failed");
+      try { await msg.reply(`❌ خطأ أثناء الرفع:\n${detail}`); } catch {}
     }
   } catch (err) {
-    logger.error({ err }, "Error processing status trigger");
+    logger.error({ err }, "Unexpected error in message_create handler");
   }
 });
 
