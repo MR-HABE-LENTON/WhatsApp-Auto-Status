@@ -77,6 +77,8 @@ export const client = new Client({
       "--memory-pressure-off",
       "--disk-cache-size=0",
       "--media-cache-size=0",
+      "--disable-features=IsolateOrigins",
+      "--disable-site-isolation-trials",
     ],
     protocolTimeout: 300_000,
     timeout: 0,

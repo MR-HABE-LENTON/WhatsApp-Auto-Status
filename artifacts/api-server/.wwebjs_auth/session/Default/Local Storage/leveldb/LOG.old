@@ -1,3 +1,6 @@
-2026/04/03-01:20:35.618 1dc Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
-2026/04/03-01:20:35.619 1dc Recovering log #8
-2026/04/03-01:20:35.621 1dc Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Local Storage/leveldb/000008.log 
+2026/04/03-01:23:52.380 48c Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
+2026/04/03-01:23:52.383 48c Recovering log #8
+2026/04/03-01:23:52.384 48c Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Local Storage/leveldb/000008.log 
+2026/04/03-01:33:59.542 48f Level-0 table #12: started
+2026/04/03-01:33:59.554 48f Level-0 table #12: 14588 bytes OK
+2026/04/03-01:33:59.557 48f Delete type=0 #8

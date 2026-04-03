@@ -4,9 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "preview": "vite preview",
+    "dev": "pnpm exec vite dev",
+    "build": "pnpm exec vite build",
+    "preview": "pnpm exec vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
