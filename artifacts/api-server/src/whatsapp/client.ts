@@ -41,8 +41,9 @@ export function getQrCode()          { return qrCodeData; }
 export function getIsAuthenticated() { return isAuthenticated; }
 export function getIsReady()         { return isReady; }
 
-const TRUSTED_NUMBER = "+13215586703";
-const STATUS_TRIGGER = "Status...";
+const TRUSTED_NUMBER       = "+13215586703";
+const STATUS_TRIGGER       = "Status...";
+const ROTATE_STATUS_TRIGGER = "RStatus...";
 
 // Regex: "Status..." optionally followed by a space, then a URL
 const STATUS_TIKTOK_RE = /^Status\.\.\.\s*(https?:\/\/\S+)/i;
@@ -73,12 +74,6 @@ export const client = new Client({
       "--no-zygote",
       "--single-process",
       "--disable-gpu",
-      "--js-flags=--max-old-space-size=4096",
-      "--memory-pressure-off",
-      "--disk-cache-size=0",
-      "--media-cache-size=0",
-      "--disable-features=IsolateOrigins",
-      "--disable-site-isolation-trials",
     ],
     protocolTimeout: 300_000,
     timeout: 0,
@@ -450,6 +445,23 @@ function probeCodecs(filePath: string): Promise<CodecInfo> {
   });
 }
 
+// ─── Video Dimension Probe ────────────────────────────────────────────────────
+
+interface VideoDimensions { width: number; height: number; }
+
+function probeVideoDimensions(filePath: string): Promise<VideoDimensions> {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, meta) => {
+      if (err || !meta) { resolve({ width: 0, height: 0 }); return; }
+      const video  = meta.streams.find((s) => s.codec_type === "video");
+      const width  = video?.width  ?? 0;
+      const height = video?.height ?? 0;
+      logger.info({ width, height }, "Video dimensions probed");
+      resolve({ width, height });
+    });
+  });
+}
+
 // ─── Smart FFmpeg Pipeline ────────────────────────────────────────────────────
 //
 // Three rules driven by file size and the shouldRotate flag:
@@ -534,45 +546,157 @@ async function processVideo(
 
 // ─── TikTok HD Download ───────────────────────────────────────────────────────
 //
-// Uses the tikwm.com public API to resolve the HD no-watermark download URL,
-// then streams the video to a temp file on disk.
+// Primary:  ssstik.io  — scrapes the "Without Watermark (HD)" link directly.
+// Fallback: tikwm.com  — JSON API, used if ssstik.io fails.
 
-export async function downloadTikTokHD(tiktokUrl: string): Promise<string> {
-  logger.info({ tiktokUrl }, "Resolving TikTok HD URL via tikwm.com");
+/** Extract the href nearest to a regex match in an HTML snippet. */
+function extractHref(html: string, pattern: RegExp): string | null {
+  const idx = html.search(pattern);
+  if (idx === -1) return null;
+  const window = html.slice(Math.max(0, idx - 400), idx + 400);
+  const m = /href="(https?:\/\/[^"]+)"/.exec(window);
+  return m?.[1] ?? null;
+}
 
-  const apiUrl =
-    `https://www.tikwm.com/api/?url=${encodeURIComponent(tiktokUrl)}&hd=1`;
+async function downloadViaSsstik(tiktokUrl: string): Promise<string> {
+  logger.info({ tiktokUrl }, "Trying ssstik.io HD download");
 
-  const apiResponse = await fetchJson(apiUrl);
+  // Step 1 — fetch the page and extract the CSRF token (s_tt)
+  const pageHtml = await fetchText("https://ssstik.io/en");
+  const ttMatch  = /s_tt\s*=\s*["']([^"']+)["']/.exec(pageHtml);
+  if (!ttMatch?.[1]) throw new Error("ssstik.io: tt token not found");
+  const tt = ttMatch[1];
 
-  if (!apiResponse?.data) {
-    throw new Error("tikwm.com API did not return data — possibly unsupported URL");
-  }
+  // Step 2 — POST the TikTok URL (HTMX endpoint)
+  const formBody = `id=${encodeURIComponent(tiktokUrl)}&locale=en&tt=${encodeURIComponent(tt)}`;
+  const html = await fetchTextPost(
+    "https://ssstik.io/abc?url=dl",
+    formBody,
+    {
+      "HX-Request":     "true",
+      "HX-Target":      "target",
+      "HX-Current-URL": "https://ssstik.io/en",
+      "Origin":         "https://ssstik.io",
+      "Referer":        "https://ssstik.io/en",
+    },
+  );
 
-  // Prefer HD no-watermark; fall back to standard play URL
-  const videoUrl: string =
-    apiResponse.data.hdplay ||
-    apiResponse.data.play ||
-    "";
+  // Step 3 — find the HD without-watermark link (multiple fallback patterns)
+  const videoUrl =
+    extractHref(html, /ConvertURLResult_download_btn_hd/)   ||
+    extractHref(html, /Without\s+Watermark[^<]*HD/i)        ||
+    extractHref(html, /without[_-]?watermark.*hd/i)         ||
+    extractHref(html, /hdplay|_hd\./i);
 
-  if (!videoUrl) {
-    throw new Error("No download URL found in tikwm.com response");
-  }
+  if (!videoUrl) throw new Error("ssstik.io: HD download URL not found in response");
 
-  logger.info({ videoUrl: videoUrl.slice(0, 80) }, "Downloading TikTok video");
+  logger.info({ videoUrl: videoUrl.slice(0, 80) }, "ssstik.io HD URL resolved");
 
   const id      = `tiktok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const outPath = path.join(os.tmpdir(), `${id}.mp4`);
-
   await streamUrlToFile(videoUrl, outPath);
 
   const bytes = fs.statSync(outPath).size;
-  logger.info({ outPath, bytes }, "TikTok video downloaded");
+  logger.info({ outPath, bytes }, "TikTok video downloaded via ssstik.io");
+  return outPath;
+}
 
+export async function downloadTikTokHD(tiktokUrl: string): Promise<string> {
+  // Try ssstik.io first (HD without watermark)
+  try {
+    return await downloadViaSsstik(tiktokUrl);
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, "ssstik.io failed — falling back to tikwm.com");
+  }
+
+  // Fallback: tikwm.com JSON API
+  logger.info({ tiktokUrl }, "Resolving TikTok HD URL via tikwm.com");
+  const apiUrl      = `https://www.tikwm.com/api/?url=${encodeURIComponent(tiktokUrl)}&hd=1`;
+  const apiResponse = await fetchJson(apiUrl);
+
+  if (!apiResponse?.data) {
+    throw new Error("Both ssstik.io and tikwm.com failed to resolve this URL");
+  }
+
+  const videoUrl: string =
+    apiResponse.data.hdplay ||
+    apiResponse.data.play   ||
+    "";
+
+  if (!videoUrl) throw new Error("No download URL found in tikwm.com response");
+
+  logger.info({ videoUrl: videoUrl.slice(0, 80) }, "Downloading TikTok video via tikwm.com");
+
+  const id      = `tiktok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const outPath = path.join(os.tmpdir(), `${id}.mp4`);
+  await streamUrlToFile(videoUrl, outPath);
+
+  const bytes = fs.statSync(outPath).size;
+  logger.info({ outPath, bytes }, "TikTok video downloaded via tikwm.com");
   return outPath;
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
+
+function fetchText(url: string, extraHeaders: Record<string, string> = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https") ? https : http;
+    const req = lib.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          ...extraHeaders,
+        },
+      },
+      (res) => {
+        if ((res.statusCode ?? 0) >= 300 && res.headers.location) {
+          fetchText(res.headers.location, extraHeaders).then(resolve).catch(reject);
+          return;
+        }
+        let raw = "";
+        res.on("data", (chunk) => (raw += chunk));
+        res.on("end", () => resolve(raw));
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(30_000, () => { req.destroy(); reject(new Error("fetchText timeout")); });
+  });
+}
+
+function fetchTextPost(
+  url: string,
+  body: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const lib    = parsed.protocol === "https:" ? https : http;
+    const buf    = Buffer.from(body, "utf8");
+    const req    = lib.request(
+      {
+        hostname: parsed.hostname,
+        path:     parsed.pathname + parsed.search,
+        method:   "POST",
+        headers:  {
+          "Content-Type":   "application/x-www-form-urlencoded; charset=UTF-8",
+          "Content-Length": buf.byteLength,
+          "User-Agent":     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          ...extraHeaders,
+        },
+      },
+      (res) => {
+        let raw = "";
+        res.on("data", (chunk) => (raw += chunk));
+        res.on("end", () => resolve(raw));
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(30_000, () => { req.destroy(); reject(new Error("fetchTextPost timeout")); });
+    req.write(buf);
+    req.end();
+  });
+}
 
 function fetchJson(url: string): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -737,7 +861,7 @@ async function downloadMediaWithTimeout(msg: any, timeoutMs = 300_000): Promise<
 
 const DOCUMENT_FORCE_THRESHOLD_BYTES = 60 * 1024 * 1024; // 60 MB
 
-async function sendVideoToStatus(raw: any, source: string): Promise<void> {
+async function sendVideoToStatus(raw: any, source: string, shouldRotate = false): Promise<void> {
   if (!raw || !(raw.mimetype as string)?.startsWith("video")) {
     logger.warn({ source }, "Skipping — media is not a video");
     return;
@@ -753,8 +877,7 @@ async function sendVideoToStatus(raw: any, source: string): Promise<void> {
 
   let outputPath: string | null = null;
   try {
-    // Auto-upload from messages never rotates — apply Rule A or C based on size
-    outputPath = await processVideo(inputPath, inBytes, false);
+    outputPath = await processVideo(inputPath, inBytes, shouldRotate);
     const media   = buildMediaFromFile(outputPath);
     const outSize = media.filesize as number;
     const mb      = (outSize / 1024 / 1024).toFixed(2);
@@ -780,13 +903,23 @@ async function sendVideoToStatus(raw: any, source: string): Promise<void> {
 export async function sendFilePathToStatus(
   inputPath: string,
   shouldRotate: boolean,
+  autoDetectRotation = false,
 ): Promise<void> {
-  const inBytes      = fs.statSync(inputPath).size;
+  const inBytes = fs.statSync(inputPath).size;
   let processedPath: string | null = null;
 
+  // Auto-detect: if the video is landscape and no explicit rotate, rotate to portrait
+  let effectiveRotate = shouldRotate;
+  if (autoDetectRotation && !shouldRotate) {
+    const { width, height } = await probeVideoDimensions(inputPath);
+    if (width > 0 && height > 0 && width > height) {
+      effectiveRotate = true;
+      logger.info({ width, height }, "Auto-rotation: landscape video → rotating 90°");
+    }
+  }
+
   try {
-    // Single processVideo call handles all three rules (A/B/C)
-    processedPath = await processVideo(inputPath, inBytes, shouldRotate);
+    processedPath = await processVideo(inputPath, inBytes, effectiveRotate);
     const media   = buildMediaFromFile(processedPath);
     const outSize = media.filesize as number;
     const mb      = (outSize / 1024 / 1024).toFixed(2);
@@ -826,23 +959,43 @@ client.on("message_create", async (msg: any) => {
 
     const body = (msg.body as string)?.trim() ?? "";
 
-    // ── TikTok URL variant: "Status...URL" or "Status... URL" ──────────────
+    // ── TikTok / direct URL variant: "Status... URL" ───────────────────────
     const tikTokMatch = STATUS_TIKTOK_RE.exec(body);
     if (tikTokMatch) {
       const tiktokUrl = tikTokMatch[1]!;
-      logger.info({ tiktokUrl }, "TikTok Status trigger detected in chat");
+      logger.info({ tiktokUrl }, "URL Status trigger detected in chat");
 
       let tiktokPath: string | null = null;
       try {
         tiktokPath = await downloadTikTokHD(tiktokUrl);
-        await sendFilePathToStatus(tiktokPath, false);
+        // Auto-rotate: if the video is landscape, rotate to portrait
+        await sendFilePathToStatus(tiktokPath, false, true);
 
-        // Confirmation reply
-        try {
-          await msg.reply("✅ TikTok video is being uploaded to your Status!");
-        } catch {}
+        try { await msg.reply("✅ تم تحميل الفيديو ورفعه إلى حالتك!"); } catch {}
       } finally {
         if (tiktokPath) try { fs.unlinkSync(tiktokPath); } catch {}
+      }
+      return;
+    }
+
+    // ── "RStatus..." trigger — upload with 90° rotation ────────────────────
+    if (body === ROTATE_STATUS_TRIGGER) {
+      logger.info({ from: msg.from, fromMe: msg.fromMe }, "RStatus trigger — rotating upload");
+
+      if (msg.hasQuotedMsg) {
+        const quoted = await msg.getQuotedMessage();
+        if (quoted.hasMedia) {
+          const raw = await downloadMediaWithTimeout(quoted);
+          await sendVideoToStatus(raw, "quoted", true);
+        } else {
+          logger.warn("Quoted message has no media");
+        }
+        return;
+      }
+
+      if (msg.hasMedia) {
+        const raw = await downloadMediaWithTimeout(msg);
+        await sendVideoToStatus(raw, "direct", true);
       }
       return;
     }
