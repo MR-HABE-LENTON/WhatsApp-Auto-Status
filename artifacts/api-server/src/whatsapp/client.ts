@@ -416,6 +416,39 @@ export async function requestPairingCode(rawPhone: string): Promise<string> {
   return code;
 }
 
+// ─── Short-URL resolver ───────────────────────────────────────────────────────
+// Follows HTTP redirects (up to 5 hops) to get the final URL.
+// Used to normalise TikTok short links (vt.tiktok.com, vm.tiktok.com, etc.)
+// before passing to downloaders that expect the canonical URL.
+
+async function resolveShortUrl(url: string, hops = 5): Promise<string> {
+  if (hops <= 0) return url;
+  return new Promise((resolve) => {
+    const lib = url.startsWith("https") ? https : http;
+    const req = lib.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      },
+      (res) => {
+        res.destroy(); // don't download the body
+        if ((res.statusCode ?? 0) >= 300 && res.headers.location) {
+          const next = res.headers.location.startsWith("http")
+            ? res.headers.location
+            : new URL(res.headers.location, url).href;
+          resolveShortUrl(next, hops - 1).then(resolve);
+        } else {
+          resolve(url);
+        }
+      },
+    );
+    req.on("error", () => resolve(url));
+    req.setTimeout(10_000, () => { req.destroy(); resolve(url); });
+  });
+}
+
 // ─── Codec Detection (ffprobe) ────────────────────────────────────────────────
 
 interface CodecInfo {
@@ -463,6 +496,18 @@ function probeVideoDimensions(filePath: string): Promise<VideoDimensions> {
   });
 }
 
+// ─── Video Duration Probe ─────────────────────────────────────────────────────
+
+function getVideoDuration(filePath: string): Promise<number> {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, meta) => {
+      if (err || !meta) { resolve(0); return; }
+      const dur = meta.format?.duration;
+      resolve(typeof dur === "number" ? dur : parseFloat(String(dur)) || 0);
+    });
+  });
+}
+
 // ─── Smart FFmpeg Pipeline ────────────────────────────────────────────────────
 //
 // Three rules driven by file size and the shouldRotate flag:
@@ -475,11 +520,12 @@ function probeVideoDimensions(filePath: string): Promise<VideoDimensions> {
 //     shouldRotate = true AND size < 150 MB
 //     → transpose=1, libx264 crf=18, bitrate floor 8000k
 //
-//   RULE C – Massive File Compression (size ≥ 150 MB, any rotation):
-//     → libx264 crf=20, maxrate 8M, bufsize 16M
+//   RULE C – Size-Targeted Compression (size ≥ 150 MB, any rotation):
+//     → Calculates bitrate from video duration to target ~130 MB output (max 15 Mbps)
 //       (+ transpose=1 if shouldRotate)
 
 const SIZE_150MB = 150 * 1024 * 1024;
+const TARGET_MB  = 130; // Rule C output target
 
 export type Orientation = "vertical" | "horizontal"; // kept for TikTok route compat
 
@@ -495,15 +541,22 @@ async function processVideo(
   let opts: string[];
 
   if (fileSizeBytes >= SIZE_150MB) {
-    // RULE C — large file: compress regardless, optionally rotate
+    // RULE C — large file: duration-based bitrate targeting ~130 MB output
     mode = "rule-C-compress";
-    const vfParts = shouldRotate ? ["-vf", "transpose=1"] : [];
+    const vfParts    = shouldRotate ? ["-vf", "transpose=1"] : [];
+    const duration   = await getVideoDuration(inputPath);
+    // target ~130 MB; cap at 15 Mbps for quality; floor at 2 Mbps for sanity
+    const targetBps  = duration > 5
+      ? Math.min(Math.max(Math.floor((TARGET_MB * 1024 * 1024 * 8) / duration), 2_000_000), 15_000_000)
+      : 8_000_000;
+    const targetKbps = Math.floor(targetBps / 1000);
+    logger.info({ duration: duration.toFixed(1), targetKbps, fileSizeMb: (fileSizeBytes / 1024 / 1024).toFixed(1) }, "Rule C bitrate calculated");
     opts = [
       ...vfParts,
       "-c:v", "libx264",
-      "-crf", "20",
-      "-maxrate", "8M",
-      "-bufsize", "16M",
+      "-b:v", `${targetKbps}k`,
+      "-maxrate", `${targetKbps * 2}k`,
+      "-bufsize", `${targetKbps * 4}k`,
       "-c:a", "aac",
       "-b:a", "192k",
       "-pix_fmt", "yuv420p",
@@ -624,21 +677,15 @@ async function downloadViaSsstik(tiktokUrl: string): Promise<string> {
   return outPath;
 }
 
-export async function downloadTikTokHD(tiktokUrl: string): Promise<string> {
-  // Try ssstik.io first (HD without watermark)
-  try {
-    return await downloadViaSsstik(tiktokUrl);
-  } catch (err) {
-    logger.warn({ err: (err as Error).message }, "ssstik.io failed — falling back to tikwm.com");
-  }
+// ─── tikwm.com downloader ─────────────────────────────────────────────────────
 
-  // Fallback: tikwm.com JSON API
-  logger.info({ tiktokUrl }, "Resolving TikTok HD URL via tikwm.com");
+async function downloadViaTikwm(tiktokUrl: string): Promise<string> {
+  logger.info({ tiktokUrl }, "Trying tikwm.com HD download");
   const apiUrl      = `https://www.tikwm.com/api/?url=${encodeURIComponent(tiktokUrl)}&hd=1`;
   const apiResponse = await fetchJson(apiUrl);
 
   if (!apiResponse?.data) {
-    throw new Error("Both ssstik.io and tikwm.com failed to resolve this URL");
+    throw new Error(`tikwm.com: no data in response (code=${apiResponse?.code}, msg=${apiResponse?.msg})`);
   }
 
   const videoUrl: string =
@@ -646,9 +693,9 @@ export async function downloadTikTokHD(tiktokUrl: string): Promise<string> {
     apiResponse.data.play   ||
     "";
 
-  if (!videoUrl) throw new Error("No download URL found in tikwm.com response");
+  if (!videoUrl) throw new Error("tikwm.com: no hdplay/play URL in response");
 
-  logger.info({ videoUrl: videoUrl.slice(0, 80) }, "Downloading TikTok video via tikwm.com");
+  logger.info({ videoUrl: videoUrl.slice(0, 80) }, "tikwm.com HD URL resolved");
 
   const id      = `tiktok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const outPath = path.join(os.tmpdir(), `${id}.mp4`);
@@ -657,6 +704,33 @@ export async function downloadTikTokHD(tiktokUrl: string): Promise<string> {
   const bytes = fs.statSync(outPath).size;
   logger.info({ outPath, bytes }, "TikTok video downloaded via tikwm.com");
   return outPath;
+}
+
+export async function downloadTikTokHD(tiktokUrl: string): Promise<string> {
+  // Resolve short URLs (vt.tiktok.com, vm.tiktok.com) to canonical URL
+  const resolvedUrl = await resolveShortUrl(tiktokUrl);
+  if (resolvedUrl !== tiktokUrl) {
+    logger.info({ original: tiktokUrl, resolved: resolvedUrl }, "Short URL resolved");
+  }
+
+  // Primary: tikwm.com JSON API (reliable, works with short and long TikTok URLs)
+  try {
+    return await downloadViaTikwm(resolvedUrl);
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, "tikwm.com failed — trying ssstik.io");
+  }
+
+  // Fallback: ssstik.io (HD without watermark via scraping)
+  try {
+    return await downloadViaSsstik(resolvedUrl);
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, "ssstik.io also failed");
+    throw new Error(
+      `All TikTok download strategies failed for: ${tiktokUrl}\n` +
+      `Resolved URL: ${resolvedUrl}\n` +
+      `Reason: ${(err as Error).message}`,
+    );
+  }
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -987,16 +1061,20 @@ client.on("message_create", async (msg: any) => {
     if (rUrlMatch) {
       const tiktokUrl = rUrlMatch[1]!;
       logger.info({ tiktokUrl }, "RStatus URL trigger — download + force rotate");
+      let step = "بدء التحميل";
       let tiktokPath: string | null = null;
       try {
+        step = "⬇️ تحميل الفيديو...";
         tiktokPath = await downloadTikTokHD(tiktokUrl);
-        // Force rotate = true (user requested it explicitly)
+        const sizeMb = (fs.statSync(tiktokPath).size / 1024 / 1024).toFixed(1);
+        step = `⚙️ معالجة الفيديو (${sizeMb} ميجا) + تدوير 90°...`;
+        logger.info({ sizeMb }, "RStatus: video downloaded, processing with rotation");
         await sendFilePathToStatus(tiktokPath, true, false);
         try { await msg.reply("✅ تم تحميل الفيديو وتدويره ورفعه إلى حالتك!"); } catch {}
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
-        logger.error({ err: detail }, "RStatus URL handler failed");
-        try { await msg.reply(`❌ فشل الرفع بتدوير:\n${detail}`); } catch {}
+        logger.error({ err: detail, step }, "RStatus URL handler failed");
+        try { await msg.reply(`❌ فشل في خطوة: ${step}\n\nالخطأ: ${detail}`); } catch {}
       } finally {
         if (tiktokPath) try { fs.unlinkSync(tiktokPath); } catch {}
       }
@@ -1008,16 +1086,20 @@ client.on("message_create", async (msg: any) => {
     if (urlMatch) {
       const tiktokUrl = urlMatch[1]!;
       logger.info({ tiktokUrl }, "Status URL trigger — download + auto-rotate");
+      let step = "بدء التحميل";
       let tiktokPath: string | null = null;
       try {
+        step = "⬇️ تحميل الفيديو...";
         tiktokPath = await downloadTikTokHD(tiktokUrl);
-        // Auto-rotate: rotate only if video is landscape
+        const sizeMb = (fs.statSync(tiktokPath).size / 1024 / 1024).toFixed(1);
+        step = `⚙️ معالجة الفيديو (${sizeMb} ميجا) + رفع إلى الحالة...`;
+        logger.info({ sizeMb }, "Status URL: video downloaded, processing");
         await sendFilePathToStatus(tiktokPath, false, true);
         try { await msg.reply("✅ تم تحميل الفيديو ورفعه إلى حالتك!"); } catch {}
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
-        logger.error({ err: detail }, "Status URL handler failed");
-        try { await msg.reply(`❌ فشل الرفع:\n${detail}`); } catch {}
+        logger.error({ err: detail, step }, "Status URL handler failed");
+        try { await msg.reply(`❌ فشل في خطوة: ${step}\n\nالخطأ: ${detail}`); } catch {}
       } finally {
         if (tiktokPath) try { fs.unlinkSync(tiktokPath); } catch {}
       }

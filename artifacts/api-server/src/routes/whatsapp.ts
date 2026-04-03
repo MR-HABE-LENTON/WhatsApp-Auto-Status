@@ -131,7 +131,7 @@ router.post(
 
 router.post("/post-link-to-status", async (req: Request, res: Response) => {
   if (!getIsReady()) {
-    res.status(503).json({ error: "WhatsApp is not ready. Please authenticate first." });
+    res.status(503).json({ error: "WhatsApp is not ready. Please authenticate first.", step: "pre-check" });
     return;
   }
 
@@ -141,7 +141,7 @@ router.post("/post-link-to-status", async (req: Request, res: Response) => {
   };
 
   if (!url) {
-    res.status(400).json({ error: "url is required" });
+    res.status(400).json({ error: "url is required", step: "pre-check" });
     return;
   }
 
@@ -151,14 +151,23 @@ router.post("/post-link-to-status", async (req: Request, res: Response) => {
   // Increase response timeout for large downloads (5 minutes)
   (res as any).setTimeout?.(300_000);
 
+  let step = "Initializing";
   let downloadedPath: string | null = null;
   try {
+    step = "Downloading video";
     downloadedPath = await downloadTikTokHD(url);
+    const sizeMb = (fs.statSync(downloadedPath).size / 1024 / 1024).toFixed(1);
+
+    step = `Processing & uploading (${sizeMb} MB)`;
     await sendFilePathToStatus(downloadedPath, shouldRotate);
-    res.json({ success: true, message: "Video downloaded and uploaded to WhatsApp Status" });
+    res.json({
+      success: true,
+      message: `Video (${sizeMb} MB) downloaded and uploaded to WhatsApp Status`,
+      sizeMb,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: message });
+    res.status(500).json({ error: message, step });
   } finally {
     if (downloadedPath) try { fs.unlinkSync(downloadedPath); } catch {}
   }
