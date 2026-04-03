@@ -60,6 +60,7 @@ const ANDROID_USER_AGENT =
 
 export const client = new Client({
   authStrategy: new LocalAuth({ dataPath: dataDir }),
+  webVersionCache: { type: "none" },
   userAgent: ANDROID_USER_AGENT,
   puppeteer: {
     headless: true,
@@ -199,6 +200,9 @@ export async function requestPairingCode(rawPhone: string): Promise<string> {
     );
   }
 
+  // Fix #3 — verify the client is actually in the auth-waiting phase.
+  // qrCodeData is only non-null after the "qr" event fires, meaning the page
+  // has rendered and is ready to accept a pairing code request.
   if (isAuthenticated || isReady) {
     throw new Error(
       "Already authenticated. Pairing code can only be requested before linking a device.",
@@ -208,6 +212,12 @@ export async function requestPairingCode(rawPhone: string): Promise<string> {
   if (!(client as any).pupPage) {
     throw new Error(
       "WhatsApp client is still initializing. Wait for the QR code to appear, then try again.",
+    );
+  }
+
+  if (!qrCodeData) {
+    throw new Error(
+      "WhatsApp has not yet generated a QR code. Wait for the QR to appear on screen, then try again.",
     );
   }
 
@@ -231,9 +241,8 @@ export async function requestPairingCode(rawPhone: string): Promise<string> {
     }, TIMEOUT_MS),
   );
 
-  // Core pairing attempt — handles both direct-return and callback paths.
-  const pairingAttempt = async (): Promise<string> => {
-    // Set up callback listener before calling the library
+  // ── Single call attempt (handles both return-value and callback paths) ─────
+  const singleAttempt = async (): Promise<string> => {
     const codeViaCallback = new Promise<string>((resolve) => {
       _pendingCodeResolve = resolve;
     });
@@ -242,8 +251,7 @@ export async function requestPairingCode(rawPhone: string): Promise<string> {
       const raw  = await (client as any).requestPairingCode(digits);
       const code = String(raw ?? "").trim();
       _pendingCodeResolve = null;
-      if (!code) throw new Error("WhatsApp returned an empty pairing code — check the number and try again");
-      return code;
+      return code; // may be empty — caller checks
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       // If the error is specifically the missing onCodeReceivedEvent callback,
@@ -252,14 +260,41 @@ export async function requestPairingCode(rawPhone: string): Promise<string> {
         _pendingCodeResolve = null;
         throw err;
       }
-      logger.info("requestPairingCode threw onCodeReceivedEvent error — waiting for page callback");
+      logger.info("onCodeReceivedEvent error — waiting for page callback");
       return await codeViaCallback;
     }
   };
 
+  // ── Fix #1 — Wait & Retry logic ───────────────────────────────────────────
+  // The Puppeteer page often needs a few extra seconds after the QR event to
+  // fully render the pairing-code DOM.  If the first attempt returns empty or
+  // throws, wait 3 s and try exactly once more before giving up.
+  const pairingAttempt = async (): Promise<string> => {
+    let code: string | undefined;
+
+    try {
+      code = await singleAttempt();
+    } catch (err: unknown) {
+      logger.warn({ err: (err as Error).message }, "Attempt 1 threw — waiting 3s before retry");
+    }
+
+    if (code) return code;
+
+    // Empty result or thrown error on attempt #1 — retry after 3 s
+    logger.warn("Attempt 1 returned empty or failed — waiting 3s, then retrying");
+    await new Promise((r) => setTimeout(r, 3_000));
+
+    code = await singleAttempt(); // throws naturally if attempt #2 also fails
+    if (!code) {
+      throw new Error(
+        "WhatsApp returned an empty pairing code after retry — check the number and try again",
+      );
+    }
+    return code;
+  };
+
   const code = await Promise.race([pairingAttempt(), timeoutPromise]);
 
-  if (!code) throw new Error("WhatsApp returned an empty pairing code — check the number and try again");
   logger.info({ code }, "Pairing code received");
   whatsappEvents.emit("pairing_code", { code });
   return code;
