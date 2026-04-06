@@ -1,3 +1,15 @@
-2026/04/03-23:08:54.482 1130 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
-2026/04/03-23:08:54.484 1130 Recovering log #21
-2026/04/03-23:08:54.485 1130 Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Local Storage/leveldb/000021.log 
+2026/04/04-20:29:27.562 211 Reusing MANIFEST /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
+2026/04/04-20:29:27.564 211 Recovering log #21
+2026/04/04-20:29:27.566 211 Reusing old log /home/runner/workspace/artifacts/api-server/.wwebjs_auth/session/Default/Local Storage/leveldb/000021.log 
+2026/04/04-20:30:27.582 20a Level-0 table #23: started
+2026/04/04-20:30:27.594 20a Level-0 table #23: 14499 bytes OK
+2026/04/04-20:30:27.598 20a Delete type=0 #21
+2026/04/04-20:30:27.599 20a Compacting 4@0 + 1@1 files
+2026/04/04-20:30:27.611 20a Generated table #24@0: 237 keys, 17834 bytes
+2026/04/04-20:30:27.611 20a Compacted 4@0 + 1@1 files => 17834 bytes
+2026/04/04-20:30:27.614 20a compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/04/04-20:30:27.615 20a Delete type=2 #9
+2026/04/04-20:30:27.615 20a Delete type=2 #12
+2026/04/04-20:30:27.615 20a Delete type=2 #16
+2026/04/04-20:30:27.615 20a Delete type=2 #19
+2026/04/04-20:30:27.615 20a Delete type=2 #23
